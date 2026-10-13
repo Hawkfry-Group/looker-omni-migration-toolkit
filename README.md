@@ -83,7 +83,7 @@ Then run a skill:
 /sankey-diagram ./dashboard-explore-mapping.md
 ```
 
-The symlinks are gitignored, so your client code never ends up in this repo.
+The symlinks and the `migration/` folder (your scope CSV and generated Omni files) are gitignored, so your client code never ends up in this repo.
 
 ## The Toolkit
 
@@ -94,6 +94,23 @@ The symlinks are gitignored, so your client code never ends up in this repo.
 | `/looker-erd` | Interactive ERD of explores and views, colour-coded by risk, with join counts and `extends` inheritance |
 | `/materialization-review` | Decides which joins to pre-materialize in the warehouse and which to keep lazy, then suggests an Omni topic structure |
 | `/sankey-diagram` | Dashboard → Explore → View lineage, with priority filters, LookML vs UGC toggles and an explore ranking |
+| `looker-to-omni-migrator` | Converts LookML views and explores into Omni views, query views, topics and relationships, scoped by a CSV, with a review report per view |
+
+### Migrating Views and Explores
+
+`looker-to-omni-migrator` does the conversion once you have a plan. A CSV lists the fields to move in each phase; the skill writes `{view}.view.yaml` (or `{view}.query.view` for derived tables), `{explore}.topic.yaml` and `{explore}.relationships`, plus a migration report per view and explore that flags everything needing manual action. It needs Python 3.9 or later:
+
+```bash
+pip install -r skills/looker-to-omni-migrator/requirements.txt
+```
+
+Then ask Claude: *"Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A."* Or run the CLI yourself from the toolkit root, where the `looker` symlink lives (relative paths and the `migration/staging/` output resolve against the current directory):
+
+```bash
+python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
+```
+
+See the [skill README](skills/looker-to-omni-migrator/README.md) for scope rules, flags and limitations.
 
 ### Agents
 
@@ -123,7 +140,7 @@ flowchart LR
 
 1. **Analyse.** Run `/looker-erd` to see every explore and its risk. Run `/sankey-diagram` to see which dashboards depend on which explores. Run the System Activity query to catch everything the repo cannot show.
 2. **Plan.** Group content by shared explores. Start with green (low risk) explores to prove the approach. Run `/materialization-review` to decide what moves into the warehouse first.
-3. **Migrate.** Shared views first (`dim_date`, `dim_customer`), then explores in dependency order. If explore A extends B, migrate B first.
+3. **Migrate.** Shared views first (`dim_date`, `dim_customer`), then explores in dependency order. If explore A extends B, migrate B first. `looker-to-omni-migrator` converts each view and explore and reports what needs manual work.
 4. **Validate.** Compare source and target, then test content against the migrated topics.
 
 ## Reading the Output

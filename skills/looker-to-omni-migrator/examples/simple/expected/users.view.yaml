@@ -1,0 +1,64 @@
+# Reference output for:
+#   python scripts/migrate.py --view users --phase 0 --owner "Team A" \
+#     --looker-repo examples/simple/thelook --csv examples/migration.csv
+# Source: examples/simple/thelook/views/users.view.lkml
+# Fields not in phase 0 for Team A (email, age, traffic_source) are kept but
+# hidden and tagged in_omni_in_looker_not_csv. email keeps its access grant.
+schema: thelook_ecommerce
+folder: thelook_ecommerce/curated
+label: Users
+description: Customers of the thelook e-commerce sample store. One row per registered customer.
+tags: [users, fact, mig_phase_0, verified]
+table_name: users
+ai_context: Customers of the thelook e-commerce sample store. One row per registered customer.
+
+dimensions:
+  id:
+    label: Id
+    description: Id dimension
+    tags: [id, mig_phase_0, verified]
+    primary_key: true
+    ai_context: Primary key for this view. Numeric identifier or value.
+
+  email:
+    label: Email
+    description: Email dimension
+    tags: [in_omni_in_looker_not_csv]
+    hidden: true
+    ai_context: Text field for filtering and display.
+    required_access_grants: [can_view_pii]
+
+  age:
+    label: Age
+    description: Age dimension
+    tags: [in_omni_in_looker_not_csv]
+    hidden: true
+    ai_context: Numeric identifier or value.
+
+  country:
+    label: Country
+    description: Country dimension
+    tags: [mig_phase_0, verified]
+    ai_context: Text field for filtering and display.
+
+  traffic_source:
+    label: Traffic Source
+    description: Channel the customer arrived from, for example Search or Email
+    tags: [in_omni_in_looker_not_csv]
+    hidden: true
+    ai_context: Channel the customer arrived from, for example Search or Email. Text field for filtering and display.
+
+  created:
+    label: Created
+    description: Created timestamp field
+    tags: [date, temporal, mig_phase_0, verified]
+    sql: created_at
+    ai_context: Created timestamp field. Date/time dimension; Omni generates the date timeframes.
+
+measures:
+  count:
+    aggregate_type: count
+    label: Customer Count
+    description: Customer Count measure
+    tags: [metric, mig_phase_0, verified]
+    ai_context: Use for counting records or distinct values.

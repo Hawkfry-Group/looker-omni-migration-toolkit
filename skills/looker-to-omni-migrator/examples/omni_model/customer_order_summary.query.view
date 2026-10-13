@@ -1,0 +1,87 @@
+# Example query view: one row per customer, built from an Omni query.
+# File customer_order_summary.query.view -> referenced as customer_order_summary.
+# Fields come from thelook_ecommerce/order_items.view; topic: order_items is order_items.topic.
+# Bin boundaries below are illustrative values, not real business thresholds.
+schema: thelook_ecommerce
+query:
+  fields:
+    thelook_ecommerce__order_items.user_id: user_id
+    thelook_ecommerce__order_items.total_sales: lifetime_sales
+    thelook_ecommerce__order_items.order_count: lifetime_orders
+    thelook_ecommerce__order_items.returned_count: lifetime_returns
+  base_view: thelook_ecommerce__order_items
+  filters:
+    thelook_ecommerce__order_items.user_id:
+      not: null
+  topic: order_items
+
+dimensions:
+  user_id:
+    primary_key: true
+
+  lifetime_sales:
+    sql: lifetime_sales
+    label: Lifetime Sales
+    format: usdcurrency_2
+    hidden: true
+    ai_context: Total sale price of every item the customer has bought
+
+  lifetime_orders:
+    sql: lifetime_orders
+    label: Lifetime Orders
+    hidden: true
+
+  lifetime_returns:
+    sql: lifetime_returns
+    label: Lifetime Returns
+    hidden: true
+
+  is_repeat_customer:
+    sql: ${customer_order_summary.lifetime_orders} > 1
+    label: Repeat Customer
+
+  lifetime_sales_tier:
+    sql: ${customer_order_summary.lifetime_sales}
+    bin_boundaries: [ 0, 100, 250, 500, 1000 ]
+    bin_labels:
+      [
+        Below 0,
+        ">= 0 and < 100",
+        ">= 100 and < 250",
+        ">= 250 and < 500",
+        ">= 500 and < 1000",
+        1000 +
+      ]
+    label: Lifetime Sales Tier
+
+measures:
+  count:
+    aggregate_type: count
+    label: Customer Count
+
+  average_lifetime_sales:
+    sql: ${customer_order_summary.lifetime_sales}
+    label: Average Lifetime Sales
+    format: usdcurrency_2
+    aggregate_type: average
+
+  total_lifetime_orders:
+    sql: ${customer_order_summary.lifetime_orders}
+    label: Total Orders
+    aggregate_type: sum
+
+  average_orders_per_customer:
+    sql: ${customer_order_summary.lifetime_orders}
+    label: Average Orders per Customer
+    format: number_1
+    aggregate_type: average
+
+  repeat_customer_count:
+    aggregate_type: count
+    label: Repeat Customers
+    filters:
+      is_repeat_customer:
+        is: true
+
+ai_context: Use this view for customer-level questions such as lifetime value,
+  repeat purchase rate and how many orders a typical customer places.

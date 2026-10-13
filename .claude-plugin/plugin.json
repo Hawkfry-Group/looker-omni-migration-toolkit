@@ -1,7 +1,7 @@
 {
   "name": "looker-omni-migration",
   "version": "0.1.0",
-  "description": "Plan a Looker to Omni migration before you move a single explore. Skills that map LookML explores and joins as a risk-scored ERD, trace dashboard to explore to view lineage, and decide which joins to materialize in the warehouse, plus a Looker System Activity query for sizing and finding UGC dashboards.",
+  "description": "Plan a Looker to Omni migration before you move a single explore. Skills that map LookML explores and joins as a risk-scored ERD, trace dashboard to explore to view lineage, and decide which joins to materialize in the warehouse, convert LookML views and explores into Omni model files, plus a Looker System Activity query for sizing and finding UGC dashboards.",
   "author": {
     "name": "Hawkfry",
     "url": "https://hawkfry.com"

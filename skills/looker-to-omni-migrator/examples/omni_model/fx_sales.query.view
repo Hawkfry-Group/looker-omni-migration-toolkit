@@ -1,0 +1,51 @@
+# Example SQL query view with templated filters.
+# File fx_sales.query.view -> referenced as fx_sales.
+# The VALUES list is made-up sample data so the example runs without any tables.
+sql: |-
+  SELECT * FROM (
+      VALUES
+          (120.00, 'USD'),
+          (45.50, 'USD'),
+          (89.99, 'EUR'),
+          (15.00, 'EUR'),
+          (230.00, 'GBP')
+  ) AS sample_sales(sale_price, currency)
+
+dimensions:
+  currency: {}
+  sale_price: {}
+
+  sale_price_converted:
+    description: Sale price multiplied by the rate entered in the exchange_rate filter
+    sql: ${sale_price} * {{filters.fx_sales.exchange_rate.value}}
+    format: number_2
+
+  currency_multiplier:
+    description: 1 when the row matches the selected currency, otherwise a fixed sample rate
+    sql: |-
+      case when {{# fx_sales.currency_select.filter }} currency
+      {{/fx_sales.currency_select.filter}} then 1 else 1.10 end
+
+  sale_price_in_selected_currency:
+    sql: ${sale_price} * ${currency_multiplier}
+
+measures:
+  count:
+    aggregate_type: count
+
+filters:
+  exchange_rate:
+    type: number
+    default_filter:
+      is: 1.0
+
+  currency_select:
+    type: string
+    suggestion_list:
+      - value: USD
+        label: USD
+      - value: EUR
+        label: EUR
+      - value: GBP
+        label: GBP
+    filter_single_select_only: true

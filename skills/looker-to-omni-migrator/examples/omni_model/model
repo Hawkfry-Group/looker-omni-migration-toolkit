@@ -1,0 +1,44 @@
+# Example Omni model file for the thelook e-commerce sample.
+# Omni names a view after its file: thelook_ecommerce/users.view is
+# thelook_ecommerce__users, fx_sales.query.view at the model root is fx_sales.
+# Prerequisite: the thelook_ecommerce schema is synced in Omni, so the schema
+# views referenced here but not in this folder (thelook_ecommerce__orders,
+# __products, __inventory_items, __distribution_centers, __events) exist.
+auto_run: true # if set to false, user will manually need to click run query 
+
+default_cache_policy: 30_cache_policy
+
+cache_policies:
+  30_cache_policy:
+    max_cache_age: 30 days
+    filter_suggestions_must_obey_policy: true
+  daily_cache_policy:
+    max_cache_age: 24 hours
+    filter_suggestions_must_obey_policy: false
+  seconds_cache_policy:
+    # String identifier for the cache policy
+    max_cache_age: 59 seconds # Required. Defines the policy's time limit.
+    filter_suggestions_must_obey_policy: false
+
+# included_views:
+# ignored_views: []
+ignored_schemas: [ pg_catalog ]
+
+#included_schemas:
+
+access_grants:
+  can_view_pii:
+    # Grant name, referenced by required_access_grants on fields and topics
+    # (see thelook_ecommerce/users.view: thelook_ecommerce__users.email).
+    user_attribute: department # Required. The user attribute the grant targets.
+    allowed_values: [ data_team ] # Required. Values that grant access.
+#
+#
+# Edge use cases which may be used in model file
+
+# dynamic_schemas:
+# fiscal_month_offset:
+# default_numeric_locale: en_US #Default. Comma-delimited thousands, period-delimited decimals, dollar default currency
+# week_start_day
+# default_topic_access_filters
+# default_topic_required_access_grants:

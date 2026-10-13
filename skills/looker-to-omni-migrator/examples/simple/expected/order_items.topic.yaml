@@ -1,0 +1,25 @@
+# Reference output for:
+#   python scripts/migrate.py --explore order_items --looker-repo examples/simple/thelook
+# Source: examples/simple/thelook/explores/order_items.explore.lkml
+# Joins are written to order_items.relationships next to this file.
+# The explore's access_filter is carried into access_filters below. The user
+# attribute (allowed_country) must exist in Omni before this topic is deployed.
+base_view: order_items
+label: Order Items
+description: Sales by item, with the customer who placed each order
+fields: [all_views.*, "-tag:table_key"]
+joins:
+  users: {}
+ai_context: |-
+  This topic provides access to Order Items data.
+
+  Base view: order_items
+  Joined views: users
+
+  Sales by item, with the customer who placed each order
+
+  This topic was migrated from a Looker explore.
+  Original explore: order_items
+access_filters:
+- field: users.country
+  user_attribute: allowed_country
