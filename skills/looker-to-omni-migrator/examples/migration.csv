@@ -1,0 +1,14 @@
+phase,view,field,type,omni_view,omni_field,owner,status,notes
+P0,order_items,id,dimension,,,Data Team,ready,Primary key
+P0,order_items,order_id,dimension,,,Data Team,ready,
+P0,order_items,status,dimension,,,Data Team,ready,
+P0,order_items,sale_price,dimension,,,Data Team,ready,
+P0,order_items,created,dimension_group,,,Data Team,ready,
+P0,order_items,count,measure,,,Data Team,ready,
+P0,order_items,order_count,measure,,,Data Team,ready,
+P0,order_items,total_sale_price,measure,,,Data Team,ready,
+P0,users,id,dimension,,,Team A,ready,Primary key
+P0,users,country,dimension,,,Team A,ready,
+P1,users,traffic_source,dimension,,,Team A,ready,
+P0,users,created,dimension_group,,,Team A,ready,
+P0,users,count,measure,,,Team A,ready,

@@ -1,0 +1,30 @@
+# Example migration config
+#
+# Copy to `migration_config.yaml` and edit, then pass it with:
+#   python scripts/migrate.py --config config/migration_config.yaml ...
+#
+# Every setting is optional. Omitted settings fall back to the defaults
+# documented in lib/config.py.
+
+# Fallback schema used when a view's source schema cannot be inferred from its
+# Looker `sql_table_name`. Set this to the schema most of your views live in.
+default_schema: thelook_ecommerce
+
+# Folder (relative to the schema) where curated view files are written.
+# Generated YAML will contain `folder: <schema>/<curated_folder>`, where <schema>
+# is read from the view's sql_table_name (default_schema only as a fallback).
+curated_folder: curated
+
+# Canonical term mappings rename business terms in the view and field labels
+# the migrator writes. Field names, SQL and descriptions are not rewritten.
+# When a field name contains the new term (e.g. product_id), the same name
+# spelled with the old term (sku_id) is added as a synonym.
+#
+# Leave empty unless your Looker vocabulary differs from your target Omni
+# vocabulary. Keys are matched as whole words, case-insensitively.
+#
+# Example: a team that wants Looker's "SKU" labels to read "Product" in Omni:
+#
+# canonical_mappings:
+#   sku: product
+canonical_mappings: {}

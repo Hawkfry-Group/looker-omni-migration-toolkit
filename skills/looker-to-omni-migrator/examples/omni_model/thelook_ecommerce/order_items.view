@@ -1,0 +1,69 @@
+# Example Omni view: thelook order_items.
+# File thelook_ecommerce/order_items.view -> referenced as thelook_ecommerce__order_items.
+description: One row per item sold in the thelook sample store
+
+schema: thelook_ecommerce
+table_name: order_items
+
+dimensions:
+  status: {}
+  created_at: {}
+  shipped_at: {}
+  delivered_at: {}
+  returned_at: {}
+
+  sale_price:
+    format: usdcurrency_2
+
+  id:
+    format: id
+    primary_key: true
+
+  order_id:
+    format: id
+
+  user_id:
+    format: id
+
+  product_id:
+    format: id
+
+  inventory_item_id:
+    format: id
+
+measures:
+  count:
+    aggregate_type: count
+
+  order_count:
+    sql: ${order_id}
+    aggregate_type: count_distinct
+    label: Order Count
+
+  total_sales:
+    sql: ${sale_price}
+    group_label: Sales
+    description: Sum of sale price
+    aggregate_type: sum
+    format: usdcurrency_2
+
+  average_sale:
+    sql: ${sale_price}
+    group_label: Sales
+    description: Average sale price per item
+    aggregate_type: average
+    format: usdcurrency_2
+
+  returned_count:
+    aggregate_type: count
+    label: Returned Items
+    filters:
+      returned_at:
+        not: null
+
+  # Measure built from other measures (no aggregate_type).
+  average_order_value:
+    sql: ${total_sales} / NULLIF(${order_count}, 0)
+    group_label: KPI
+    label: Average Order Value
+    format: usdcurrency_2

@@ -1,0 +1,18 @@
+# Looker to Omni Migration Skill Dependencies
+# Install with: pip install -r requirements.txt  (Python 3.9+)
+
+# LookML parsing
+lkml>=1.3.0
+
+# YAML reading (config, tests) and round-trip writing of Omni files
+pyyaml>=6.0
+ruamel.yaml>=0.17.21
+
+# SQL formatting for derived-table views
+sqlparse>=0.4.4
+
+# Validation and serialization of Omni models
+pydantic>=2.0.0
+
+# Tests
+pytest>=7.0.0

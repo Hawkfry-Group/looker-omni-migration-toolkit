@@ -1,0 +1,38 @@
+phase,view,field,type,omni_view,omni_field,owner,status,notes
+P0,order_items,id,dimension,order_items,id,Data Team,ready,Primary key
+P0,order_items,order_id,dimension,order_items,order_id,Data Team,ready,
+P0,order_items,status,dimension,order_items,status,Data Team,ready,
+P0,order_items,price_tier,dimension,order_items,price_tier,Data Team,ready,Unsupported tier
+P0,order_items,discount_amount,dimension,order_items,discount_amount,Data Team,ready,Not in LookML
+P0,order_items,created,dimension_group,order_items,created,Data Team,ready,
+P0,order_items,fulfillment,dimension_group,order_items,fulfillment,Data Team,ready,Duration
+P0,order_items,count,measure,order_items,count,Data Team,ready,
+P0,order_items,order_count,measure,order_items,order_count,Data Team,ready,
+P0,order_items,total_sale_price,measure,order_items,total_sale_price,Data Team,ready,
+P0,order_items,median_sale_price,measure,order_items,median_sale_price,Data Team,ready,
+P0,order_items,gross_margin_per_order,measure,order_items,gross_margin_per_order,Data Team,ready,Three levels of dependencies
+P0,order_items,returned_count,measure,order_items,returned_count,Data Team,ready,
+P0,order_items,completed_or_shipped_count,measure,order_items,completed_or_shipped_count,Data Team,ready,
+P0,order_items,large_order_count,measure,order_items,large_order_count,Data Team,ready,
+P0,order_items,wildcard_status_count,measure,order_items,wildcard_status_count,Data Team,ready,Wildcard filter
+P0,order_items,running_total_sales,measure,order_items,running_total_sales,Data Team,ready,Unsupported type
+P0,order_items,total_sales_eur,measure,order_items,total_sales_eur,Data Team,ready,Unmapped format
+P0,users,id,dimension,users,id,Team A,ready,Primary key
+P0,users,full_name,dimension,users,full_name,Team A,ready,
+P0,users,email,dimension,users,email,Team A,ready,
+P0,users,country,dimension,users,country,Team A,ready,
+P0,users,created,dimension_group,users,created,Team A,ready,
+P0,users,count,measure,users,count,Team A,ready,
+P1,users,average_age,measure,users,average_age,Team A,pending,
+P0,products,id,dimension,products,id,Team A,ready,
+P0,products,sku,dimension,products,sku,Team A,ready,
+P0,products,brand,dimension,products,brand,Team A,ready,
+P0,products,count,measure,products,count,Team A,ready,
+0,user_order_facts,user_id,dimension,user_order_facts,user_id,Data Team,ready,Numeric phase
+0,user_order_facts,lifetime_revenue,dimension,user_order_facts,lifetime_revenue,Data Team,ready,
+0,user_order_facts,is_repeat_buyer,dimension,user_order_facts,is_repeat_buyer,Data Team,ready,
+0,user_order_facts,first_order,dimension_group,user_order_facts,first_order,Data Team,ready,
+0,user_order_facts,average_lifetime_revenue,measure,user_order_facts,average_lifetime_revenue,Data Team,ready,
+P0,brand_sales,brand,dimension,brand_sales,brand,Data Team,ready,
+P0,brand_sales,total_sales,dimension,brand_sales,total_sales,Data Team,ready,
+P0,brand_sales,average_brand_sales,measure,brand_sales,average_brand_sales,Data Team,ready,

@@ -1,0 +1,81 @@
+# Example Omni topic: thelook order_items with customers and products.
+# File order_items.topic -> topic name order_items.
+# Prerequisite: the thelook_ecommerce schema is synced in Omni, so the schema
+# views referenced here but not in this folder (thelook_ecommerce__orders,
+# __products, __inventory_items, __distribution_centers, __events) exist.
+base_view: thelook_ecommerce__order_items
+base_view_label: Order Items
+label: Order Items
+display_order: 0
+description: Sales by order item, with the customer who ordered and the product sold.
+
+# Exclude cancelled items from every query in this topic.
+always_where_sql: ${thelook_ecommerce__order_items.status} != 'Cancelled'
+
+joins:
+  thelook_ecommerce__users: {}
+  thelook_ecommerce__inventory_items:
+    thelook_ecommerce__products:
+      thelook_ecommerce__distribution_centers: {}
+
+ai_context: "**Use This Topic When** the question is about sales, orders,
+  returns, products or the customers who placed orders."
+
+sample_queries:
+  Top 5 Categories by Sales:
+    query:
+      fields:
+        [
+          thelook_ecommerce__products.category,
+          thelook_ecommerce__order_items.total_sales
+        ]
+      base_view: thelook_ecommerce__order_items
+      limit: 5
+      sorts:
+        - field: thelook_ecommerce__order_items.total_sales
+          desc: true
+      topic: order_items
+    description: Product categories ranked by total sale price
+    prompt: Which product categories sell the most?
+
+  Sales by Traffic Source:
+    query:
+      fields:
+        [
+          thelook_ecommerce__users.traffic_source,
+          thelook_ecommerce__order_items.total_sales,
+          thelook_ecommerce__order_items.count
+        ]
+      base_view: thelook_ecommerce__order_items
+      filters:
+        thelook_ecommerce__users.traffic_source:
+          not: null
+      limit: 100
+      sorts:
+        - field: thelook_ecommerce__order_items.total_sales
+          desc: true
+      topic: order_items
+    description: Sales and item counts by the channel the customer came from
+    prompt: How do sales compare across traffic sources?
+    ai_context: Display as a bar chart with total_sales on the axis.
+
+  Share of Sales by Department:
+    query:
+      fields:
+        [
+          thelook_ecommerce__products.department,
+          thelook_ecommerce__order_items.total_sales,
+          calc_1
+        ]
+      base_view: thelook_ecommerce__order_items
+      calculations:
+        calc_1:
+          sql: OMNI_FX_SAFE_DIVIDE(${thelook_ecommerce__order_items.total_sales},
+            ${thelook_ecommerce__order_items.total_sales:column_total})
+      limit: 100
+      sorts:
+        - field: calc_1
+          desc: true
+      topic: order_items
+    description: Percent of total sales by product department
+    prompt: What share of sales comes from each department?

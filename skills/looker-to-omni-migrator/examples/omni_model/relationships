@@ -1,0 +1,69 @@
+# Example Omni relationships file for the thelook model.
+# Prerequisite: the thelook_ecommerce schema is synced in Omni, so the schema
+# views referenced here but not in this folder (thelook_ecommerce__orders,
+# __products, __inventory_items, __distribution_centers, __events) exist.
+# Each entry joins two views; topics pick which joins they use.
+
+- join_from_view: thelook_ecommerce__order_items
+  join_to_view: thelook_ecommerce__orders
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__order_items.order_id} = ${thelook_ecommerce__orders.order_id}
+  relationship_type: many_to_one
+  reversible: false
+
+- join_from_view: thelook_ecommerce__order_items
+  join_to_view: thelook_ecommerce__users
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__order_items.user_id} = ${thelook_ecommerce__users.id}
+  relationship_type: many_to_one
+  reversible: false
+
+- join_from_view: thelook_ecommerce__order_items
+  join_to_view: thelook_ecommerce__inventory_items
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__order_items.inventory_item_id} =
+    ${thelook_ecommerce__inventory_items.id}
+  relationship_type: one_to_one
+
+- join_from_view: thelook_ecommerce__inventory_items
+  join_to_view: thelook_ecommerce__products
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__inventory_items.product_id} = ${thelook_ecommerce__products.id}
+  relationship_type: many_to_one
+  reversible: false
+
+- join_from_view: thelook_ecommerce__products
+  join_to_view: thelook_ecommerce__distribution_centers
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__products.distribution_center_id} =
+    ${thelook_ecommerce__distribution_centers.id}
+  relationship_type: many_to_one
+  reversible: false
+
+- join_from_view: thelook_ecommerce__users
+  join_to_view: thelook_ecommerce__orders
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__users.id} = ${thelook_ecommerce__orders.user_id}
+  relationship_type: one_to_many
+  reversible: false
+
+- join_from_view: thelook_ecommerce__users
+  join_to_view: thelook_ecommerce__events
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__users.id} = ${thelook_ecommerce__events.user_id}
+  relationship_type: one_to_many
+  reversible: false
+
+# --------------------------------------- Aliased join (join_to_view_as)
+# Joins distribution_centers a second time under a different name: the centre
+# that holds the inventory item, separate from the product's home centre above.
+
+- join_from_view: thelook_ecommerce__inventory_items
+  join_to_view: thelook_ecommerce__distribution_centers
+  join_to_view_as: stock_distribution_centers
+  join_to_view_as_label: Stock Distribution Center
+  join_type: always_left
+  on_sql: ${thelook_ecommerce__inventory_items.product_distribution_center_id} =
+    ${stock_distribution_centers.id}
+  relationship_type: many_to_one
+  reversible: false

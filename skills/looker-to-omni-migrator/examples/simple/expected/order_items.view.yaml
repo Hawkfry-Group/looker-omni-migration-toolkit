@@ -1,0 +1,98 @@
+# Reference output for:
+#   python scripts/migrate.py --view order_items --phase 0 --owner "Data Team" \
+#     --looker-repo examples/simple/thelook --csv examples/migration.csv
+# Source: examples/simple/thelook/views/order_items.view.lkml
+# Fields not listed in examples/migration.csv (user_id, is_returned,
+# average_sale_price) are kept but hidden and tagged in_omni_in_looker_not_csv.
+schema: thelook_ecommerce
+folder: thelook_ecommerce/curated
+label: Order Items
+description: One row per item sold. Each order contains one or more items.
+tags: [order, fact, mig_phase_0, verified]
+table_name: order_items
+ai_context: Line items for the thelook e-commerce sample store. One row per item sold.
+
+dimensions:
+  id:
+    label: Id
+    description: Unique identifier for the order item
+    tags: [id, mig_phase_0, verified]
+    primary_key: true
+    ai_context: Primary key for this view. Unique identifier for the order item. Numeric identifier or value.
+
+  order_id:
+    label: Order Id
+    description: Order this item belongs to
+    tags: [id, mig_phase_0, verified]
+    ai_context: Order this item belongs to. Numeric identifier or value.
+
+  user_id:
+    label: User Id
+    description: User Id dimension
+    tags: [in_omni_in_looker_not_csv]
+    hidden: true
+    ai_context: Numeric identifier or value.
+
+  status:
+    label: Status
+    description: Fulfilment status of the item, for example Shipped or Returned
+    tags: [mig_phase_0, verified]
+    ai_context: Fulfilment status of the item, for example Shipped or Returned. Text field for filtering and display.
+
+  sale_price:
+    label: Sale Price
+    description: Price the item sold for
+    tags: [mig_phase_0, verified]
+    ai_context: Price the item sold for. Numeric identifier or value.
+    format: usdcurrency_2
+
+  is_returned:
+    label: Is Returned
+    description: Is Returned dimension
+    tags: [in_omni_in_looker_not_csv]
+    sql: returned_at IS NOT NULL
+    hidden: true
+    ai_context: Yes/no flag.
+
+  created:
+    label: Created
+    description: When the item was ordered
+    tags: [date, temporal, mig_phase_0, verified]
+    sql: created_at
+    ai_context: When the item was ordered. Date/time dimension; Omni generates the date timeframes.
+
+measures:
+  count:
+    aggregate_type: count
+    label: Count
+    description: Count measure
+    tags: [metric, mig_phase_0, verified]
+    ai_context: Use for counting records or distinct values.
+
+  order_count:
+    aggregate_type: count_distinct
+    sql: ${order_id}
+    label: Order Count
+    description: Number of distinct orders
+    tags: [metric, mig_phase_0, verified]
+    format: number_0
+    ai_context: Number of distinct orders. Use for counting records or distinct values.
+
+  total_sale_price:
+    aggregate_type: sum
+    sql: ${sale_price}
+    label: Total Sales
+    description: Total Sales measure
+    tags: [metric, mig_phase_0, verified]
+    format: usdcurrency_2
+    ai_context: Aggregate sum across records.
+
+  average_sale_price:
+    aggregate_type: average
+    sql: ${sale_price}
+    label: Average Sale Price
+    description: Average Sale Price measure
+    tags: [in_omni_in_looker_not_csv]
+    hidden: true
+    format: usdcurrency_2
+    ai_context: Average value across records.

@@ -22,6 +22,7 @@ looker-omni-migration-toolkit/
 ├── .claude-plugin/                # plugin and marketplace manifests
 ├── skills/
 │   ├── looker-erd/
+│   ├── looker-to-omni-migrator/
 │   ├── materialization-review/
 │   └── sankey-diagram/            # includes system_activity_tile_count.sql
 ├── agents/
@@ -41,7 +42,7 @@ Generate interactive ERD diagrams from LookML explore files.
 
 ```bash
 /looker-erd ./looker/model_name
-/looker-erd ./looker/mymodel --title "P0 Explores"
+/looker-erd ./looker/your_model --title "P0 Explores"
 ```
 
 **Output:** Interactive HTML visualization showing:
@@ -56,7 +57,7 @@ Analyze LookML joins and recommend which should be pre-materialized in the wareh
 
 ```bash
 /materialization-review ./looker/model_name
-/materialization-review ./looker/mymodel --output ./docs/warehouse-plan.md
+/materialization-review ./looker/your_model --output ./docs/warehouse-plan.md
 ```
 
 **Output:** Markdown report covering:
@@ -80,6 +81,17 @@ Generate an interactive Dashboard → Explore → View lineage diagram.
 - Dashboard, explore, and view counts
 - Explores ranked by dashboard usage
 - Optional complexity overrides via `dashboard-complexity.csv`
+
+#### `looker-to-omni-migrator`
+Convert LookML views and explores into Omni model files. A CSV sets which fields are in scope per phase and owner. Run the CLI from the skill directory (`skills/looker-to-omni-migrator/`) after `pip install -r requirements.txt` (Python 3.9+):
+
+```bash
+python scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
+python scripts/migrate.py --explore order_items
+python scripts/migrate.py --parse-access-grants
+```
+
+**Output:** `{view}.view.yaml` (or `{view}.query.view` for derived tables) and `{view}.migration.md` per view; `{explore}.topic.yaml`, `{explore}_explore.md` and, when at least one join converts, `{explore}.relationships` per explore. Defaults write to `migration/staging/{views,topics,reports}`. After each run, surface every MANUAL ACTION REQUIRED item to the user. See the skill's `SKILL.md` for instructions and `rules/` for conversion rules.
 
 ### Agents
 
@@ -130,7 +142,7 @@ dashboards that trip a Looker performance warning, and caps at 100 rows.
 ### Phase 3: Migration
 1. Create symlink to Omni repo
 2. Migrate views first (shared dims like `dim_date`, `dim_customer`)
-3. Migrate explores in dependency order
+3. Migrate explores in dependency order (`looker-to-omni-migrator`)
 4. Use `omni-docs-lookup` agent to validate syntax
 
 ### Phase 4: Validation

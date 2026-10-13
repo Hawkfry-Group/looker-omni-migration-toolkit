@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+.~*
+
+# Generated migration output (examples/ is tracked, see negations below)
+*.migration.md
+*.view.yaml
+*.query.view
+*.topic.yaml
+*.relationships
+
+# Keep the checked-in examples and config template
+!examples/**
+!config/*.example.yaml
+
+# Local config (copy config/migration_config.example.yaml to create it)
+config/migration_config.yaml
+
+# Local migration scope CSV and staging output
+migration/views.csv
+migration/staging/

@@ -1,0 +1,60 @@
+# Example Omni view: thelook users (customers).
+# File thelook_ecommerce/users.view -> referenced as thelook_ecommerce__users.
+description: One row per registered customer of the thelook sample store
+
+schema: thelook_ecommerce
+table_name: users
+
+dimensions:
+  first_name: {}
+  last_name: {}
+  state: {}
+  city: {}
+  traffic_source: {}
+
+  id:
+    format: id
+    primary_key: true
+
+  email:
+    description: Customer email address
+    tags: [ pii ]
+    required_access_grants: [ can_view_pii ]
+
+  age:
+    description: Age of the customer in years
+
+  age_tier:
+    sql: ${age}
+    bin_boundaries: [ 18, 25, 35, 50, 65 ]
+    label: Age Tier
+
+  gender:
+    description: Customer gender as recorded at sign-up
+
+  country:
+    description: Country the customer is based in
+
+  created_at:
+    description: When the customer account was created
+
+  is_first_month:
+    sql: DATE_TRUNC('month', ${created_at}) = DATE_TRUNC('month', CURRENT_DATE)
+    label: Joined This Month
+
+measures:
+  count:
+    aggregate_type: count
+    label: Customer Count
+
+  new_customer_count:
+    aggregate_type: count
+    label: New Customers (This Month)
+    filters:
+      is_first_month:
+        is: true
+
+  average_age:
+    sql: ${age}
+    aggregate_type: average
+    format: number_1

@@ -1,0 +1,43 @@
+# Example Omni topic: thelook users (customers), with an access filter.
+# File users.topic -> topic name users.
+# Prerequisite: the thelook_ecommerce schema is synced in Omni, so the schema
+# views referenced here but not in this folder (thelook_ecommerce__orders,
+# __products, __inventory_items, __distribution_centers, __events) exist.
+base_view: thelook_ecommerce__users
+label: Customers
+
+fields: [ all_views.*, "-tag:table_key", "-tag:pii" ]
+
+# Row-level security: users only see customers in their own country,
+# unless their user attribute is set to all_countries.
+access_filters:
+  - field: thelook_ecommerce__users.country
+    user_attribute: allowed_country
+    values_for_unfiltered: [ all_countries ]
+
+joins:
+  thelook_ecommerce__orders: {}
+  thelook_ecommerce__events: {}
+
+views:
+  thelook_ecommerce__users:
+    display_order: 0
+
+  thelook_ecommerce__orders:
+    display_order: 1
+
+  thelook_ecommerce__events:
+    display_order: 2
+
+sample_queries:
+  Customers by Country:
+    query:
+      fields: [ thelook_ecommerce__users.country, thelook_ecommerce__users.count ]
+      base_view: thelook_ecommerce__users
+      limit: 10
+      sorts:
+        - field: thelook_ecommerce__users.count
+          desc: true
+      topic: users
+    description: Countries with the most registered customers
+    prompt: Which countries have the most customers?

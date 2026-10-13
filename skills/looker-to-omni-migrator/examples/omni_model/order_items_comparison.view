@@ -1,0 +1,36 @@
+# Example: period-over-period measure driven by a filter-only field.
+# File order_items_comparison.view -> referenced as order_items_comparison.
+# template: true marks this as a template view. A view that extends it (for
+# example thelook_ecommerce__order_items) supplies sale_price and created_at.
+template: true
+
+measures:
+  total_sales_comparison_period:
+    sql: ${sale_price}
+    label: Total Sales (Comparison Period)
+    aggregate_type: sum
+    format: usdcurrency_2
+    filters:
+      created_at:
+        date_offset_from_query: "{{ filters.order_items_comparison.comparison_period.value }}"
+        cancel_query_filter: true
+
+filters:
+  comparison_period:
+    type: string
+    label: Comparison Period
+    description: Period to compare against. Defaults to the same dates last year.
+      Affects every measure with "Comparison Period" in its name.
+    view_label: Date
+    suggestion_list:
+      - value: 1 Week
+        label: Previous Week
+      - value: 1 Month
+        label: Previous Month
+      - value: 1 Quarter
+        label: Previous Quarter
+      - value: 1 Year
+        label: Previous Year
+    default_filter:
+      is: 1 Year
+    filter_single_select_only: true
