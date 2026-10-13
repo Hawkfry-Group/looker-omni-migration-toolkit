@@ -21,17 +21,17 @@
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="examples/sample-erd.html"><img src=".github/assets/sample-erd.png" alt="Interactive explore ERD"></a>
+      <a href="https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-erd.html"><img src=".github/assets/sample-erd.png" alt="Interactive explore ERD"></a>
       <p><b><code>/looker-erd</code></b><br>Every explore and the views it joins, scored by risk. Click a node to trace its relationships.</p>
     </td>
     <td width="50%" valign="top">
-      <a href="examples/sample-sankey.html"><img src=".github/assets/sample-sankey.png" alt="Dashboard lineage Sankey"></a>
+      <a href="https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-sankey.html"><img src=".github/assets/sample-sankey.png" alt="Dashboard lineage Sankey"></a>
       <p><b><code>/sankey-diagram</code></b><br>Dashboards flowing into explores and views, filtered by priority. Find the explores that carry the most content.</p>
     </td>
   </tr>
 </table>
 
-Both examples are real output, generated from Looker's public [thelook eCommerce](https://github.com/looker-open-source/thelookevent) project. Download either HTML file from [`examples/`](examples) and open it in a browser to explore it. Source details are in [examples/README.md](examples/README.md).
+Both examples are real output, generated from Looker's public [thelook eCommerce](https://github.com/looker-open-source/thelookevent) project. Click either screenshot to open the live, interactive version: [ERD](https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-erd.html) · [Sankey](https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-sankey.html). Source details are in [examples/README.md](examples/README.md).
 
 ## Quick Start
 
