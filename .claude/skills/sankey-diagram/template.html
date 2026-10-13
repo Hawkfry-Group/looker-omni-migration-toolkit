@@ -65,6 +65,10 @@
             font-weight: 500;
         }
 
+        .header .logo:empty {
+            display: none;
+        }
+
         .container {
             max-width: 1800px;
             margin: 0 auto;
@@ -361,7 +365,7 @@
             <h1>{{TITLE}}</h1>
             <p class="subtitle">{{SUBTITLE}}</p>
         </div>
-        <div class="logo">Hawkfry Group</div>
+        <div class="logo">{{BRAND}}</div>
     </header>
 
     <div class="container">
@@ -481,7 +485,7 @@
     </div>
 
     <footer class="footer">
-        Generated with Sankey Diagram Skill | <a href="https://hawkfry.com">Hawkfry Group</a>
+        Generated with the <a href="https://github.com/Hawkfry-Group/looker-omni-migration-toolkit">Looker to Omni Migration Toolkit</a>
     </footer>
 
     <script>

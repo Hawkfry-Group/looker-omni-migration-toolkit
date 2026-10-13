@@ -13,6 +13,7 @@ Generate interactive ECharts Sankey diagrams showing three-column data flow rela
 /sankey-diagram
 /sankey-diagram ./mapping.md
 /sankey-diagram --title "P0 Dashboard Flow" --output ./docs/sankey.html
+/sankey-diagram ./mapping.md --brand "Acme Data Team"
 ```
 
 ## What You Need
@@ -102,6 +103,7 @@ Use the template at `./template.html`:
 
 1. Replace `{{TITLE}}` with the diagram title
 2. Replace `{{SUBTITLE}}` with subtitle text
+   Replace `{{BRAND}}` with the `--brand` value (HTML-escaped), or an empty string if none was given. The header label hides itself when empty
 3. Replace `{{DASHBOARD_DATA_JSON}}` with dashboard data array
 4. Replace `{{EXPLORE_VIEW_MAP_JSON}}` with explore-view mappings
 
@@ -115,6 +117,7 @@ Save the generated HTML to the output path (default: `./sankey-diagram.html`).
 |----------|-------------|
 | `{{TITLE}}` | Page title |
 | `{{SUBTITLE}}` | Subtitle text |
+| `{{BRAND}}` | Optional team or company name shown top right. Empty string hides it |
 | `{{DASHBOARD_DATA_JSON}}` | Dashboard data as JSON array |
 | `{{EXPLORE_VIEW_MAP_JSON}}` | Explore→view map as JSON object |
 
