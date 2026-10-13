@@ -1,0 +1,11 @@
+# GitHub Pages only publishes the README and the examples.
+# Skill, agent and template files contain Liquid and {{placeholder}} syntax that
+# Jekyll would otherwise try to render.
+exclude:
+  - skills
+  - agents
+  - queries
+  - templates
+  - CLAUDE.md
+  - NOTICE
+  - LICENSE
