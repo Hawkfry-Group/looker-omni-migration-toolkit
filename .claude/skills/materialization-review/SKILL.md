@@ -42,7 +42,7 @@ The user should provide:
 ## How to Analyze
 
 ### Step 1: Find Required Joins
-Search all explore files for `required_joins:` - these are the strongest materialization candidates.
+Search all explore files for `required_joins:`. These are the strongest materialization candidates.
 
 ```lookml
 explore: order {
@@ -76,7 +76,7 @@ join: dim_account_plan {
 Joins with 3+ conditions or embedded filters (`latest = 1`, `status = 'active'`) are candidates.
 
 ### Step 4: Find UNNEST Patterns
-Search for UNNEST in sql_on - these should generally stay as lazy joins:
+Search for UNNEST in sql_on. These should generally stay as lazy joins:
 
 ```lookml
 join: fact_order_items {
@@ -91,7 +91,7 @@ For each explore, count total joins and categorize by relationship type:
 - `many_to_one` = safe dimension joins
 
 ### Step 6: Identify Repeated Patterns
-Find views that are joined to 10+ explores with the same join logic - these are consolidation candidates.
+Find views that are joined to 10+ explores with the same join logic. These are consolidation candidates.
 
 ## Output Format
 

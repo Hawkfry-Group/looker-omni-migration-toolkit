@@ -33,7 +33,7 @@ which half of the picture they are looking at.
 | Input | Derivable from LookML? | Where it comes from |
 |-------|------------------------|---------------------|
 | Dashboard to explore links | Yes | `.dashboard.lookml` files |
-| Explore to view links | Yes | `join:` blocks in `.explore.lkml` |
+| Explore to view links | Yes | `join:` blocks in any `.lkml` file that defines explores |
 | UGC dashboards | **No** | Built in the Looker UI, never in the repo. Use `queries/system_activity_tile_count.sql` |
 | Priority (P0 to P4) | **No** | The client's own prioritisation |
 | Tile counts | **No** | Looker System Activity |
@@ -71,9 +71,14 @@ Parse source data to extract:
 - From existing mapping documentation
 - From user-provided data
 
+For LookML dashboards:
+- Use the dashboard's `title:` as its name, not the file or dashboard id. It is what the business recognises, and what System Activity reports, so the two lists can be reconciled
+- Collect every `explore:` referenced by an element (tile) **and** by a dashboard filter. A filter bound to an explore is a dependency to migrate too
+
 **Explore-to-View mappings:**
-- From explore LookML files (`.explore.lkml`)
-- Extract `join:` blocks to find views
+- Find explores the same way `/looker-erd` does: in any `.lkml` file, with refinements (`explore: +name`) merged into the base explore
+- Extract `join:` blocks to find views. When a join uses `from:`, list the underlying view, not the alias
+- Put the base view first, then joins in declaration order. The chart shows at most 4 views per explore, taken in this order
 
 ### Step 2: Structure the Data
 
@@ -107,9 +112,11 @@ Use the template at `./template.html`:
 3. Replace `{{DASHBOARD_DATA_JSON}}` with dashboard data array
 4. Replace `{{EXPLORE_VIEW_MAP_JSON}}` with explore-view mappings
 
-### Step 4: Save and Open
+When writing the JSON into the page, replace every `<` with `\u003c` so a name containing `</script>` cannot end the script block early. HTML-escape `{{TITLE}}`, `{{SUBTITLE}}` and `{{BRAND}}`. Confirm no `{{` placeholders remain.
 
-Save the generated HTML to the output path (default: `./sankey-diagram.html`).
+### Step 4: Save
+
+Save the generated HTML to the output path (default: `./sankey-diagram.html`) and tell the user where it is.
 
 ## Template Variables
 
@@ -166,7 +173,7 @@ Only include dashboards you want to override. Others use calculated values. Over
 
 ## Notes
 
-- Maximum 4 views shown per explore to prevent visual clutter
+- Maximum 4 views shown per explore to prevent visual clutter (the first 4 in `exploreViewMap` order). The ranking table's view count still includes all of them
 - Node names are prefixed internally: `D:`, `E:`, `V:` for uniqueness
 - Empty searches show all results
 - Priority filter defaults to P0

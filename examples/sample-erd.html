@@ -2,36 +2,1236 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sample ERD - Looker Migration Toolkit</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>thelook eCommerce ERD</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: system-ui, sans-serif;
+            font-family: 'Segoe UI', system-ui, sans-serif;
             background: #0a0a0f;
             color: #e4eff0;
-            padding: 40px;
-            text-align: center;
+            overflow: hidden;
         }
-        h1 { color: #71eaed; }
-        p { color: #888; max-width: 600px; margin: 20px auto; }
-        code {
+
+        #header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            z-index: 100;
+            border-bottom: 1px solid #333;
+        }
+
+        #header h1 {
+            font-size: 20px;
+            font-weight: 500;
+            color: #71eaed;
+        }
+
+        #header .subtitle {
+            font-size: 12px;
+            color: #888;
+            margin-left: 16px;
+        }
+
+        #controls {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 12px;
+            color: #888;
+        }
+
+        select {
+            background: #222;
+            color: #e4eff0;
+            border: 1px solid #444;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        #graph {
+            width: 100vw;
+            height: calc(100vh - 60px);
+            margin-top: 60px;
+        }
+
+        .node {
+            cursor: pointer;
+        }
+
+        .node circle {
+            stroke-width: 2px;
+            transition: all 0.2s;
+        }
+
+        .node:hover circle {
+            stroke-width: 4px;
+            filter: brightness(1.2);
+        }
+
+        .node text {
+            font-size: 10px;
+            fill: #e4eff0;
+            pointer-events: none;
+        }
+
+        .link {
+            stroke-opacity: 0.4;
+            transition: stroke-opacity 0.2s;
+        }
+
+        .link:hover {
+            stroke-opacity: 0.8;
+        }
+
+        .link-extends {
+            stroke-dasharray: 5, 5;
+            stroke-opacity: 0.6;
+        }
+
+        .link-extends:hover {
+            stroke-opacity: 0.9;
+        }
+
+        #tooltip {
+            position: absolute;
+            background: #1a1a2e;
+            border: 1px solid #71eaed;
+            border-radius: 8px;
+            padding: 16px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 400px;
+            z-index: 1000;
+        }
+
+        #tooltip h3 {
+            color: #71eaed;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        #tooltip p {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+
+        #tooltip .stat {
+            display: inline-block;
             background: #222;
             padding: 4px 8px;
             border-radius: 4px;
+            margin: 2px;
+            font-size: 11px;
+        }
+
+        #tooltip .risk-critical { color: #ff4757; }
+        #tooltip .risk-high { color: #ffa502; }
+        #tooltip .risk-medium { color: #ffd93d; }
+        #tooltip .risk-low { color: #2ed573; }
+
+        #legend {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            z-index: 100;
+        }
+
+        #legend h4 {
+            font-size: 12px;
+            color: #71eaed;
+            margin-bottom: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 11px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+        }
+
+        #stats {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            z-index: 100;
+        }
+
+        #stats h4 {
+            font-size: 12px;
+            color: #71eaed;
+            margin-bottom: 12px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            color: #71eaed;
+            font-weight: 600;
         }
     </style>
 </head>
 <body>
-    <h1>Sample ERD Output</h1>
-    <p>
-        This is a placeholder. Run the <code>/looker-erd</code> skill on your
-        Looker model to generate an interactive ERD diagram.
-    </p>
-    <p>
-        <code>/looker-erd ./looker/your_model</code>
-    </p>
-    <p>
-        The generated diagram will show explores, views, join relationships,
-        risk levels, and click-to-highlight functionality.
-    </p>
+    <div id="header">
+        <div style="display: flex; align-items: center;">
+            <h1>thelook eCommerce ERD</h1>
+            <span class="subtitle">13 explores from looker-open-source/thelookevent</span>
+        </div>
+        <div id="controls">
+            <div class="control-group">
+                <label>Filter by Explore:</label>
+                <select id="exploreFilter">
+                    <option value="all">All Explores</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Show:</label>
+                <select id="viewFilter">
+                    <option value="all">All Views</option>
+                    <option value="shared">Shared Views Only</option>
+                    <option value="fact">Fact Tables</option>
+                    <option value="dim">Dimensions</option>
+                    <option value="derived">Aggregate/Derived</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div id="graph"></div>
+
+    <div id="tooltip"></div>
+
+    <div id="legend">
+        <h4>Node Types</h4>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ff4757;"></div>
+            <span>Critical Explore</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ffa502;"></div>
+            <span>High Risk Explore</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ffd93d;"></div>
+            <span>Medium Risk Explore</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #2ed573;"></div>
+            <span>Low Risk Explore</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #71eaed;"></div>
+            <span>Fact Table</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #5a8aa5;"></div>
+            <span>Dimension</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #9c88ff;"></div>
+            <span>Aggregate/Derived</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #888;"></div>
+            <span>Other View</span>
+        </div>
+        <div class="legend-item" style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #333;">
+            <svg width="40" height="16" style="margin-right: 4px;">
+                <line x1="0" y1="8" x2="30" y2="8" stroke="#9c88ff" stroke-width="2" stroke-dasharray="5,5"/>
+                <polygon points="30,8 24,4 24,12" fill="#9c88ff"/>
+            </svg>
+            <span>Extends</span>
+        </div>
+    </div>
+
+    <div id="stats">
+        <h4>Statistics</h4>
+        <div class="stat-row">
+            <span>Explores</span>
+            <span class="stat-value">13</span>
+        </div>
+        <div class="stat-row">
+            <span>Unique Views</span>
+            <span class="stat-value">27</span>
+        </div>
+        <div class="stat-row">
+            <span>Total Joins</span>
+            <span class="stat-value">46</span>
+        </div>
+        <div class="stat-row">
+            <span>Critical Risk</span>
+            <span class="stat-value" style="color: #ff4757;">0</span>
+        </div>
+        <div class="stat-row">
+            <span>High Risk</span>
+            <span class="stat-value" style="color: #ffa502;">0</span>
+        </div>
+    </div>
+
+    <script>
+        // Data injected by skill
+        const explores = [
+  {
+    "id": "explore:affinity",
+    "name": "affinity",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "affinity",
+    "lines": 28,
+    "joins": 2,
+    "risk": "low",
+    "views": [
+      "affinity",
+      "products"
+    ],
+    "viewCounts": [
+      {
+        "name": "affinity",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 2
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:cohorts",
+    "name": "cohorts",
+    "file": "views/98_cohort_data_tool.view.lkml",
+    "description": "",
+    "baseView": "cohort_size",
+    "lines": 34,
+    "joins": 2,
+    "risk": "low",
+    "views": [
+      "cohort_size",
+      "users",
+      "order_items_cohorts"
+    ],
+    "viewCounts": [
+      {
+        "name": "cohort_size",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "order_items_cohorts",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:data_tool",
+    "name": "data_tool",
+    "file": "views/97_web_analytics_data_tool.view.lkml",
+    "description": "",
+    "baseView": "data_tool",
+    "lines": 22,
+    "joins": 3,
+    "risk": "low",
+    "views": [
+      "data_tool",
+      "sessions_webanalytics",
+      "users",
+      "user_order_facts"
+    ],
+    "viewCounts": [
+      {
+        "name": "data_tool",
+        "count": 1
+      },
+      {
+        "name": "sessions_webanalytics",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "user_order_facts",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:ecomm_predict",
+    "name": "ecomm_predict",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "ecomm_predict",
+    "lines": 39,
+    "joins": 6,
+    "risk": "low",
+    "views": [
+      "ecomm_predict",
+      "users",
+      "order_items",
+      "inventory_items",
+      "products",
+      "repeat_purchase_facts",
+      "order_facts"
+    ],
+    "viewCounts": [
+      {
+        "name": "ecomm_predict",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "order_items",
+        "count": 1
+      },
+      {
+        "name": "inventory_items",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 1
+      },
+      {
+        "name": "repeat_purchase_facts",
+        "count": 1
+      },
+      {
+        "name": "order_facts",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:ecomm_training_info",
+    "name": "ecomm_training_info",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "ecomm_training_info",
+    "lines": 18,
+    "joins": 3,
+    "risk": "low",
+    "views": [
+      "ecomm_training_info",
+      "cluster_info",
+      "ecomm_model_eval",
+      "ecomm_feature_info"
+    ],
+    "viewCounts": [
+      {
+        "name": "ecomm_training_info",
+        "count": 1
+      },
+      {
+        "name": "cluster_info",
+        "count": 1
+      },
+      {
+        "name": "ecomm_model_eval",
+        "count": 1
+      },
+      {
+        "name": "ecomm_feature_info",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:events",
+    "name": "events",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "events",
+    "lines": 53,
+    "joins": 6,
+    "risk": "low",
+    "views": [
+      "events",
+      "sessions",
+      "products",
+      "users",
+      "user_order_facts"
+    ],
+    "viewCounts": [
+      {
+        "name": "events",
+        "count": 3
+      },
+      {
+        "name": "sessions",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "user_order_facts",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:inventory_snapshot",
+    "name": "inventory_snapshot",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "inventory_snapshot",
+    "lines": 23,
+    "joins": 3,
+    "risk": "low",
+    "views": [
+      "inventory_snapshot",
+      "trailing_sales_snapshot",
+      "products",
+      "distribution_centers"
+    ],
+    "viewCounts": [
+      {
+        "name": "inventory_snapshot",
+        "count": 1
+      },
+      {
+        "name": "trailing_sales_snapshot",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 1
+      },
+      {
+        "name": "distribution_centers",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:journey_mapping",
+    "name": "journey_mapping",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "order_items",
+    "lines": 36,
+    "joins": 4,
+    "risk": "low",
+    "views": [
+      "order_items",
+      "repeat_purchase_facts",
+      "inventory_items",
+      "products"
+    ],
+    "viewCounts": [
+      {
+        "name": "order_items",
+        "count": 2
+      },
+      {
+        "name": "repeat_purchase_facts",
+        "count": 1
+      },
+      {
+        "name": "inventory_items",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 1
+      }
+    ],
+    "extends": [
+      "order_items"
+    ]
+  },
+  {
+    "id": "explore:kitten_order_items",
+    "name": "kitten_order_items",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "order_items",
+    "lines": 10,
+    "joins": 1,
+    "risk": "low",
+    "views": [
+      "order_items",
+      "kitten_users"
+    ],
+    "viewCounts": [
+      {
+        "name": "order_items",
+        "count": 1
+      },
+      {
+        "name": "kitten_users",
+        "count": 1
+      }
+    ],
+    "extends": [
+      "order_items"
+    ]
+  },
+  {
+    "id": "explore:kmeans_model5",
+    "name": "kmeans_model5",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "kmeans_model5",
+    "lines": 1,
+    "joins": 0,
+    "risk": "low",
+    "views": [
+      "kmeans_model5"
+    ],
+    "viewCounts": [
+      {
+        "name": "kmeans_model5",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:order_items",
+    "name": "order_items",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "order_items",
+    "lines": 141,
+    "joins": 9,
+    "risk": "low",
+    "views": [
+      "order_items",
+      "order_facts",
+      "promo_email",
+      "inventory_items",
+      "users",
+      "user_order_facts",
+      "products",
+      "repeat_purchase_facts",
+      "discounts",
+      "distribution_centers"
+    ],
+    "viewCounts": [
+      {
+        "name": "order_items",
+        "count": 1
+      },
+      {
+        "name": "order_facts",
+        "count": 1
+      },
+      {
+        "name": "promo_email",
+        "count": 1
+      },
+      {
+        "name": "inventory_items",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "user_order_facts",
+        "count": 1
+      },
+      {
+        "name": "products",
+        "count": 1
+      },
+      {
+        "name": "repeat_purchase_facts",
+        "count": 1
+      },
+      {
+        "name": "discounts",
+        "count": 1
+      },
+      {
+        "name": "distribution_centers",
+        "count": 1
+      }
+    ],
+    "extends": []
+  },
+  {
+    "id": "explore:orders_with_share_of_wallet_application",
+    "name": "orders_with_share_of_wallet_application",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "order_items",
+    "lines": 9,
+    "joins": 1,
+    "risk": "low",
+    "views": [
+      "order_items",
+      "order_items_share_of_wallet"
+    ],
+    "viewCounts": [
+      {
+        "name": "order_items",
+        "count": 1
+      },
+      {
+        "name": "order_items_share_of_wallet",
+        "count": 1
+      }
+    ],
+    "extends": [
+      "order_items"
+    ]
+  },
+  {
+    "id": "explore:sessions",
+    "name": "sessions",
+    "file": "models/thelook.model.lkml",
+    "description": "",
+    "baseView": "sessions",
+    "lines": 51,
+    "joins": 6,
+    "risk": "low",
+    "views": [
+      "sessions",
+      "events",
+      "products",
+      "users",
+      "user_order_facts"
+    ],
+    "viewCounts": [
+      {
+        "name": "sessions",
+        "count": 1
+      },
+      {
+        "name": "events",
+        "count": 3
+      },
+      {
+        "name": "products",
+        "count": 1
+      },
+      {
+        "name": "users",
+        "count": 1
+      },
+      {
+        "name": "user_order_facts",
+        "count": 1
+      }
+    ],
+    "extends": []
+  }
+];
+        // Extends relationships: [{source: "explore:parent", target: "explore:child"}]
+        const extendsLinks = [
+  {
+    "source": "explore:order_items",
+    "target": "explore:journey_mapping"
+  },
+  {
+    "source": "explore:order_items",
+    "target": "explore:kitten_order_items"
+  },
+  {
+    "source": "explore:order_items",
+    "target": "explore:orders_with_share_of_wallet_application"
+  }
+];
+
+        // Free text (descriptions, file paths) is rendered via innerHTML, so escape it
+        const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+        const viewTypeOf = name =>
+            name.startsWith("fact_") ? "fact" :
+            name.startsWith("dim_") ? "dim" :
+            name.startsWith("agg_") || name.startsWith("dt_") ? "derived" : "other";
+
+        // Build nodes and links
+        const nodes = [];
+        const links = [];
+        const viewMap = new Map();
+
+        // Add explore nodes
+        explores.forEach(exp => {
+            nodes.push({
+                id: exp.id,
+                name: exp.name,
+                type: "explore",
+                risk: exp.risk,
+                data: exp
+            });
+        });
+
+        // Add view nodes and links
+        explores.forEach(exp => {
+            exp.views.forEach(viewName => {
+                if (!viewMap.has(viewName)) {
+                    const viewType = viewTypeOf(viewName);
+
+                    viewMap.set(viewName, {
+                        id: viewName,
+                        name: viewName,
+                        type: viewType,
+                        connectedTo: []
+                    });
+                    nodes.push(viewMap.get(viewName));
+                }
+
+                viewMap.get(viewName).connectedTo.push(exp.id);
+
+                links.push({
+                    source: exp.id,
+                    target: viewName
+                });
+            });
+        });
+
+        // Populate filter dropdown
+        const filterSelect = document.getElementById("exploreFilter");
+        explores.forEach(exp => {
+            const option = document.createElement("option");
+            option.value = exp.id;
+            option.textContent = exp.name;
+            filterSelect.appendChild(option);
+        });
+
+        // D3 visualization
+        const width = window.innerWidth;
+        const height = window.innerHeight - 60;
+
+        const svg = d3.select("#graph")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        // Add arrow marker for extends relationships
+        svg.append("defs").append("marker")
+            .attr("id", "arrowhead")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 25)
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", "#9c88ff");
+
+        // Add zoom behavior
+        const g = svg.append("g");
+
+        svg.call(d3.zoom()
+            .extent([[0, 0], [width, height]])
+            .scaleExtent([0.1, 4])
+            .on("zoom", (event) => {
+                g.attr("transform", event.transform);
+            }));
+
+        // Color scales
+        const riskColors = {
+            critical: "#ff4757",
+            high: "#ffa502",
+            medium: "#ffd93d",
+            low: "#2ed573"
+        };
+
+        const typeColors = {
+            explore: null,
+            fact: "#71eaed",
+            dim: "#5a8aa5",
+            derived: "#9c88ff",
+            other: "#888"
+        };
+
+        // Combine all links for simulation
+        const allLinks = [...links, ...extendsLinks];
+
+        // Simulation
+        const simulation = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(allLinks).id(d => d.id).distance(120))
+            .force("charge", d3.forceManyBody().strength(d => d.type === "explore" ? -900 : -300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("x", d3.forceX(width / 2).strength(0.05))
+            .force("y", d3.forceY(height / 2).strength(0.08))
+            .force("collision", d3.forceCollide().radius(d => d.type === "explore" ? 55 : 35));
+
+        // View links (solid lines)
+        const link = g.append("g")
+            .selectAll("line")
+            .data(links)
+            .enter().append("line")
+            .attr("class", "link")
+            .attr("stroke", "#444")
+            .attr("stroke-width", 1);
+
+        // Extends links (dotted lines with arrows)
+        const extendsLink = g.append("g")
+            .selectAll("line")
+            .data(extendsLinks)
+            .enter().append("line")
+            .attr("class", "link link-extends")
+            .attr("stroke", "#9c88ff")
+            .attr("stroke-width", 2)
+            .attr("marker-end", "url(#arrowhead)");
+
+        // Nodes
+        const node = g.append("g")
+            .selectAll(".node")
+            .data(nodes)
+            .enter().append("g")
+            .attr("class", "node")
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended));
+
+        node.append("circle")
+            .attr("r", d => d.type === "explore" ? 20 : 8)
+            .attr("fill", d => {
+                if (d.type === "explore") {
+                    return riskColors[d.risk] || "#888";
+                }
+                return typeColors[d.type] || "#888";
+            })
+            .attr("stroke", d => {
+                if (d.type === "explore") {
+                    return "#fff";
+                }
+                return typeColors[d.type] || "#888";
+            });
+
+        node.append("text")
+            .attr("dy", d => d.type === "explore" ? 32 : 18)
+            .attr("text-anchor", "middle")
+            .text(d => {
+                const name = d.name.replace(/_/g, "_\u200B");
+                return name.length > 20 ? name.substring(0, 17) + "..." : name;
+            })
+            .style("font-size", d => d.type === "explore" ? "11px" : "9px")
+            .style("font-weight", d => d.type === "explore" ? "600" : "400");
+
+        // Tooltip
+        const tooltip = d3.select("#tooltip");
+
+        // Track selected node
+        let selectedNode = null;
+
+        // Click handler for highlighting relationships
+        node.on("click", function(event, d) {
+            event.stopPropagation();
+
+            if (selectedNode === d.id) {
+                selectedNode = null;
+                resetHighlight();
+                return;
+            }
+
+            selectedNode = d.id;
+
+            const connectedNodes = new Set([d.id]);
+
+            if (d.type === "explore") {
+                // Explore clicked - highlight all its views
+                const exploreData = explores.find(e => e.id === d.id);
+                if (exploreData) {
+                    exploreData.views.forEach(v => connectedNodes.add(v));
+                }
+            } else {
+                // View clicked - highlight only the explores that use it (not sibling views)
+                const viewConnections = d.connectedTo || [];
+                viewConnections.forEach(expId => {
+                    connectedNodes.add(expId);
+                });
+            }
+
+            node.style("opacity", n => connectedNodes.has(n.id) ? 1 : 0.15);
+            node.select("circle")
+                .attr("stroke-width", n => n.id === d.id ? 4 : (connectedNodes.has(n.id) ? 2 : 1))
+                .attr("stroke", n => n.id === d.id ? "#fff" : (n.type === "explore" ? "#fff" : typeColors[n.type]));
+
+            link.style("opacity", l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                return (sourceId === d.id || targetId === d.id) ? 0.9 : 0.05;
+            })
+            .attr("stroke-width", l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                return (sourceId === d.id || targetId === d.id) ? 2 : 1;
+            })
+            .attr("stroke", l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                return (sourceId === d.id || targetId === d.id) ? "#71eaed" : "#444";
+            });
+
+            updateSelectionInfo(d, connectedNodes);
+        });
+
+        svg.on("click", function() {
+            selectedNode = null;
+            resetHighlight();
+            hideSelectionInfo();
+        });
+
+        function resetHighlight() {
+            node.style("opacity", 1);
+            node.select("circle")
+                .attr("stroke-width", 2)
+                .attr("stroke", d => d.type === "explore" ? "#fff" : typeColors[d.type]);
+            link.style("opacity", 0.4)
+                .attr("stroke-width", 1)
+                .attr("stroke", "#444");
+        }
+
+        // Selection info panel
+        const selectionInfo = d3.select("body").append("div")
+            .attr("id", "selection-info")
+            .style("position", "fixed")
+            .style("top", "80px")
+            .style("right", "20px")
+            .style("width", "280px")
+            .style("background", "#1a1a2e")
+            .style("border", "1px solid #71eaed")
+            .style("border-radius", "8px")
+            .style("padding", "16px")
+            .style("display", "none")
+            .style("z-index", "100")
+            .style("max-height", "calc(100vh - 200px)")
+            .style("overflow-y", "auto");
+
+        function updateSelectionInfo(d, connectedNodes) {
+            let html = `<h4 style="color: #71eaed; margin-bottom: 12px; font-size: 14px;">${d.name}</h4>`;
+
+            if (d.type === "explore") {
+                html += `<p style="font-size: 10px; color: #666; margin-bottom: 8px; font-family: monospace;">${esc(d.data.file)}</p>`;
+                html += `<p style="font-size: 11px; color: #888; margin-bottom: 8px;">${esc(d.data.description)}</p>`;
+                html += `<div style="margin-bottom: 12px;">
+                    <span class="stat" style="background: #222; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin: 2px; display: inline-block;">Lines: ${d.data.lines}</span>
+                    <span class="stat" style="background: #222; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin: 2px; display: inline-block;">Joins: ${d.data.joins}</span>
+                    <span class="stat" style="background: ${riskColors[d.risk]}22; color: ${riskColors[d.risk]}; padding: 4px 8px; border-radius: 4px; font-size: 11px; margin: 2px; display: inline-block;">${d.risk.toUpperCase()}</span>
+                </div>`;
+                const viewCounts = d.data.viewCounts || d.data.views.map(v => ({name: v, count: 1}));
+                html += `<p style="font-size: 12px; color: #71eaed; margin-bottom: 8px;">Connected Views (${viewCounts.length} unique):</p>`;
+                html += `<div style="max-height: 200px; overflow-y: auto;">`;
+                viewCounts.forEach(vc => {
+                    const v = vc.name || vc;
+                    const count = vc.count || 1;
+                    const vType = viewTypeOf(v);
+                    const color = typeColors[vType];
+                    const countBadge = count > 1 ? `<span style="float: right; background: #ff4757; color: white; padding: 1px 6px; border-radius: 10px; font-size: 9px;">${count}x</span>` : '';
+                    html += `<div style="font-size: 10px; padding: 4px 8px; margin: 2px 0; background: ${color}22; border-left: 3px solid ${color}; border-radius: 2px;">${v}${countBadge}</div>`;
+                });
+                html += `</div>`;
+            } else {
+                const connections = d.connectedTo || [];
+                html += `<p style="font-size: 11px; color: #888; margin-bottom: 8px;">Type: ${d.type}</p>`;
+                html += `<p style="font-size: 12px; color: #71eaed; margin-bottom: 8px;">Used in ${connections.length} explore${connections.length !== 1 ? 's' : ''}:</p>`;
+                connections.forEach(expId => {
+                    const exp = explores.find(e => e.id === expId);
+                    if (exp) {
+                        const color = riskColors[exp.risk];
+                        // Find join count for this view in this explore
+                        const viewCount = exp.viewCounts ? exp.viewCounts.find(vc => vc.name === d.name) : null;
+                        const count = viewCount ? viewCount.count : 1;
+                        const countBadge = count > 1 ? `<span style="background: #ff4757; color: white; padding: 1px 6px; border-radius: 10px; font-size: 9px; margin-left: 4px;">${count}x</span>` : '';
+                        html += `<div style="font-size: 11px; padding: 6px 8px; margin: 4px 0; background: ${color}22; border-left: 3px solid ${color}; border-radius: 2px;">
+                            <strong>${exp.name}</strong>${countBadge}
+                            <span style="float: right; color: ${color}; font-size: 10px;">${exp.risk}</span>
+                            <div style="font-size: 9px; color: #666; font-family: monospace;">${esc(exp.file)}</div>
+                        </div>`;
+                    }
+                });
+            }
+
+            html += `<p style="font-size: 10px; color: #666; margin-top: 12px; text-align: center;">Click background to deselect</p>`;
+
+            selectionInfo.html(html).style("display", "block");
+        }
+
+        function hideSelectionInfo() {
+            selectionInfo.style("display", "none");
+        }
+
+        node.on("mouseover", function(event, d) {
+            if (selectedNode) return;
+
+            if (d.type === "explore") {
+                tooltip.html(`
+                    <h3>${d.data.name}</h3>
+                    <p style="font-size: 10px; color: #666; font-family: monospace;">${esc(d.data.file)}</p>
+                    <p>${esc(d.data.description)}</p>
+                    <p><span class="stat">Base: ${esc(d.data.baseView)}</span></p>
+                    <p>
+                        <span class="stat">Lines: ${d.data.lines}</span>
+                        <span class="stat">Joins: ${d.data.joins}</span>
+                        <span class="stat risk-${d.risk}">Risk: ${d.risk.toUpperCase()}</span>
+                    </p>
+                    <p style="margin-top: 8px; font-size: 10px; color: #666;">
+                        Views: ${d.data.views.length} unique | Click to highlight
+                    </p>
+                `);
+            } else {
+                const connections = d.connectedTo || [];
+                // Calculate total join count across all explores
+                let totalJoins = 0;
+                connections.forEach(expId => {
+                    const exp = explores.find(e => e.id === expId);
+                    if (exp && exp.viewCounts) {
+                        const vc = exp.viewCounts.find(v => v.name === d.name);
+                        if (vc) totalJoins += vc.count;
+                    } else {
+                        totalJoins += 1;
+                    }
+                });
+                tooltip.html(`
+                    <h3>${d.name}</h3>
+                    <p>Type: ${d.type}</p>
+                    <p>
+                        <span class="stat">${connections.length} explore${connections.length !== 1 ? 's' : ''}</span>
+                        <span class="stat">${totalJoins} total join${totalJoins !== 1 ? 's' : ''}</span>
+                    </p>
+                    <p style="font-size: 10px; color: #666;">Click to highlight</p>
+                `);
+            }
+
+            tooltip
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 10) + "px")
+                .style("opacity", 1);
+        })
+        .on("mouseout", function() {
+            tooltip.style("opacity", 0);
+        });
+
+        // Simulation tick
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            extendsLink
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            node.attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+
+        // Drag functions
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+
+        // Filter functionality
+        document.getElementById("exploreFilter").addEventListener("change", function(e) {
+            const selected = e.target.value;
+
+            if (selected === "all") {
+                node.style("opacity", 1);
+                link.style("opacity", 0.4);
+            } else {
+                const selectedExplore = explores.find(exp => exp.id === selected);
+                const relatedViews = new Set(selectedExplore.views);
+                relatedViews.add(selected);
+
+                node.style("opacity", d => relatedViews.has(d.id) || d.id === selected ? 1 : 0.1);
+                link.style("opacity", d =>
+                    d.source.id === selected || d.target.id === selected ? 0.8 : 0.05
+                );
+            }
+        });
+
+        document.getElementById("viewFilter").addEventListener("change", function(e) {
+            const filter = e.target.value;
+
+            node.style("opacity", d => {
+                if (d.type === "explore") return 1;
+                if (filter === "all") return 1;
+                if (filter === "shared") return (d.connectedTo && d.connectedTo.length > 1) ? 1 : 0.1;
+                if (filter === "fact") return d.type === "fact" ? 1 : 0.1;
+                if (filter === "dim") return d.type === "dim" ? 1 : 0.1;
+                if (filter === "derived") return d.type === "derived" ? 1 : 0.1;
+                return 1;
+            });
+        });
+    </script>
 </body>
 </html>

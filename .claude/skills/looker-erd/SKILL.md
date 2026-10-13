@@ -26,27 +26,29 @@ Always build the output from the template. Do not write a new HTML page from scr
 
 ## Step 1: Find the explores
 
-Search every `*.lkml` file under the model path for `explore:` blocks. Explores live in `.explore.lkml` files on some projects and directly in `.model.lkml` files on others, so check both.
+Search every `*.lkml` file under the model path for `explore:` blocks. Explores can be defined in `.explore.lkml`, `.model.lkml` and even `.view.lkml` files, so do not filter by file type.
 
 - `explore: name {` defines an explore
-- `explore: +name {` is a **refinement**. Merge its joins into the base explore `name`; do not create a second node
+- `explore: +name {` is a **refinement**, and can sit in any file. Merge its joins into the base explore `name`; do not create a second node
 - Skip explores that only exist inside a `.dashboard.lookml` file
 
 ## Step 2: Parse each explore
 
-For each explore, read the block from `explore: name {` to its matching closing brace and extract:
+For each explore, read the block from `explore: name {` to its matching closing brace and extract the fields below.
+
+When matching braces, ignore any inside `#` comments, quoted strings, SQL blocks (`sql_on:`, `sql:` and similar run to `;;`) and Liquid tags (`{% ... %}`, `{{ ... }}`). Counting those breaks the match on most real projects.
 
 | Field | How to get it |
 |-------|---------------|
 | `name` | the explore name |
 | `file` | path of the file it is defined in, relative to the model path |
-| `description` | the `description:` value, or `""` |
-| `baseView` | `from:` if set, else `view_name:` if set, else the explore name |
-| `lines` | number of lines in the explore block (refinements included) |
-| `joins` | number of `join:` blocks (aliased joins of the same view each count) |
+| `description` | the explore-level `description:`, else its `label:`, else `""`. Ignore `description:` inside nested blocks such as `query:` or `join:` |
+| `baseView` | `from:` if set, else `view_name:` if set, else (for an explore that `extends` a parent) the parent's `baseView`, else the explore name |
+| `lines` | lines in the explore block plus the lines of every refinement of it, wherever those refinements live |
+| `joins` | number of `join:` blocks declared in the explore and its refinements (aliased joins of the same view each count). Do **not** count joins inherited through `extends`; the extends arrow already shows that relationship |
 | `views` | **unique** underlying view names: `baseView` plus each join's view. A join's view is its `from:` value when present, else the join name |
 | `viewCounts` | `[{name, count}]` for each view in `views`: how many times it appears (base counts as 1, each join adds 1) |
-| `extends` | names listed in `extends: [...]`, if any |
+| `extends` | names listed in `extends: [...]`, if any. Used only to build `EXTENDS_JSON`; it does not need to appear in `EXPLORES_JSON` |
 
 ## Step 3: Score risk
 
@@ -108,7 +110,7 @@ Read `template.html` and replace every placeholder:
 | `{{CRITICAL_COUNT}}` | explores with risk `critical` |
 | `{{HIGH_COUNT}}` | explores with risk `high` |
 
-When writing the JSON into the page, replace every `<` with `<`. LookML descriptions can contain HTML or Liquid, and a literal `</script>` inside one would end the script block early. HTML-escape `{{TITLE}}` and `{{SUBTITLE}}`.
+When writing the JSON into the page, replace every `<` with `\u003c`. LookML descriptions can contain HTML or Liquid, and a literal `</script>` inside one would end the script block early. HTML-escape `{{TITLE}}` and `{{SUBTITLE}}`.
 
 After writing the file, confirm no `{{` placeholders remain, then tell the user where it was saved and summarise the risk breakdown and the most widely shared views.
 

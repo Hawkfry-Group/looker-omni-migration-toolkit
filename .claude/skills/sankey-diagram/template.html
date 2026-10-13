@@ -495,6 +495,9 @@
         // Dashboard data
         const dashboardData = {{DASHBOARD_DATA_JSON}};
 
+        // Names are rendered via innerHTML, so escape them
+        const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
         // State
         let currentFilters = {
             priority: "P0",
@@ -847,7 +850,7 @@
                 const isOverride = complexityOverrides[d.dashboard] ? '•' : '';
                 return `
                 <tr>
-                    <td class="explore-name">${d.dashboard}</td>
+                    <td class="explore-name">${esc(d.dashboard)}</td>
                     <td>${d.explores.length}</td>
                     <td><span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:4px;background:${complexity.color};color:white;font-weight:600;font-size:11px;" title="${isOverride ? 'Override from CSV' : 'Calculated'}">${complexity.label}${isOverride}</span></td>
                 </tr>
@@ -864,7 +867,7 @@
             tbody.innerHTML = sorted.map((explore, idx) => `
                 <tr>
                     <td><span class="migration-order">${idx + 1}</span></td>
-                    <td class="explore-name">${explore.name}</td>
+                    <td class="explore-name">${esc(explore.name)}</td>
                     <td>${explore.dashboardCount}</td>
                     <td class="view-count">${explore.viewCount}</td>
                 </tr>
