@@ -1,6 +1,6 @@
 ---
 name: looker-erd
-description: Generate an interactive ERD of a Looker project from its LookML: every explore, the views it joins, join counts, extends inheritance and a risk score per explore. Use when assessing or scoping a Looker to Omni migration (or any Looker migration), mapping explore and view relationships, auditing LookML complexity, or deciding which explores to migrate first.
+description: "Generate an interactive ERD of a Looker project from its LookML: every explore, the views it joins, join counts, extends inheritance and a risk score per explore. Use when assessing or scoping a Looker to Omni migration (or any Looker migration), mapping explore and view relationships, auditing LookML complexity, or deciding which explores to migrate first."
 ---
 
 # Looker ERD Generator

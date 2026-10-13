@@ -1,6 +1,6 @@
 ---
 name: sankey-diagram
-description: Generate an interactive Sankey of Looker dashboard to explore to view lineage, with P0 to P4 priority filters, LookML vs UGC dashboard toggles and an explore ranking. Includes a Looker System Activity SQL query for tile counts and finding UI-built dashboards. Use when scoping or prioritising a Looker to Omni migration, sizing migration effort, or tracing which dashboards depend on which explores.
+description: "Generate an interactive Sankey of Looker dashboard to explore to view lineage, with P0 to P4 priority filters, LookML vs UGC dashboard toggles and an explore ranking. Includes a Looker System Activity SQL query for tile counts and finding UI-built dashboards. Use when scoping or prioritising a Looker to Omni migration, sizing migration effort, or tracing which dashboards depend on which explores."
 ---
 
 # Sankey Diagram Generator
