@@ -35,6 +35,31 @@ Both examples are real output, generated from Looker's public [thelook eCommerce
 
 ## Quick Start
 
+### Install as a Claude Code Plugin
+
+Run Claude Code inside your Looker repository and install the toolkit:
+
+```
+/plugin install looker-omni-migration --marketplace Hawkfry-Group/looker-omni-migration-toolkit
+```
+
+On older Claude Code versions, add the marketplace first:
+
+```
+/plugin marketplace add Hawkfry-Group/looker-omni-migration-toolkit
+/plugin install looker-omni-migration@looker-omni-migration
+```
+
+### Install for Codex, Copilot, Gemini CLI and Other Agents
+
+The skills follow the open `SKILL.md` format, so any [skills.sh](https://skills.sh) compatible agent can load them:
+
+```bash
+npx skills add Hawkfry-Group/looker-omni-migration-toolkit
+```
+
+### Or Clone and Run
+
 You need [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), your Looker repository (LookML), and optionally your Omni model repository.
 
 ```bash
@@ -79,7 +104,7 @@ The symlinks are gitignored, so your client code never ends up in this repo.
 
 ### Queries
 
-**`system_activity_tile_count.sql`** fills the gap LookML cannot. Run it against Looker System Activity to get tile counts, owners and legacy flags, and to find the user-built (UGC) dashboards that never appear in the repo. Read the header comment first: as written it returns only performance-flagged dashboards and stops at 100 rows.
+**`system_activity_tile_count.sql`** (shipped inside the `sankey-diagram` skill, linked from `queries/`) fills the gap LookML cannot. Run it against Looker System Activity to get tile counts, owners and legacy flags, and to find the user-built (UGC) dashboards that never appear in the repo. Read the header comment first: as written it returns only performance-flagged dashboards and stops at 100 rows.
 
 ### Templates
 
@@ -136,7 +161,7 @@ A Looker migration runs for weeks and produces a lot of decisions: which explore
 - **Linear** (what we use): add the [Linear MCP server](https://linear.app/docs/mcp) and track each explore or dashboard group as an issue. Claude can pick up where the last session left off, link `/materialization-review` findings to issues, and update status as content moves.
 - **Your own tracker or memory system:** any MCP server that gives Claude somewhere durable to read and write works the same way (Jira, GitHub Issues, Notion, or a plain `MIGRATION_LOG.md` committed alongside your Omni repo).
 
-The bundled agents only get read and web tools. To let them write to your tracker, add those tools to the `tools:` line in `.claude/agents/*.md`.
+The bundled agents only get read and web tools. To let them write to your tracker, add those tools to the `tools:` line in `agents/*.md`.
 
 ## Contributing
 

@@ -1,0 +1,25 @@
+{
+  "name": "looker-omni-migration",
+  "owner": {
+    "name": "Hawkfry",
+    "url": "https://hawkfry.com"
+  },
+  "metadata": {
+    "description": "Open source Claude Code skills for planning a Looker to Omni migration: explore ERDs, dashboard lineage and materialization review.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "looker-omni-migration",
+      "source": "./",
+      "description": "Plan a Looker to Omni migration before you move a single explore. Risk-scored LookML explore ERDs, dashboard to explore to view lineage, warehouse materialization review, and a Looker System Activity query for sizing and finding UGC dashboards.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Hawkfry"
+      },
+      "license": "Apache-2.0",
+      "keywords": ["looker", "lookml", "omni", "looker-migration", "bi-migration", "semantic-layer", "erd", "data-lineage", "materialization"],
+      "category": "data"
+    }
+  ]
+}

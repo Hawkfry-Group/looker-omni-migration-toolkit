@@ -1,6 +1,6 @@
 ---
 name: sankey-diagram
-description: Generate interactive Sankey flow diagrams showing Dashboard → Explore → View dependencies. Use when visualizing data lineage, planning Looker/Omni migrations, or analyzing dashboard dependencies.
+description: Generate an interactive Sankey of Looker dashboard to explore to view lineage, with P0 to P4 priority filters, LookML vs UGC dashboard toggles and an explore ranking. Includes a Looker System Activity SQL query for tile counts and finding UI-built dashboards. Use when scoping or prioritising a Looker to Omni migration, sizing migration effort, or tracing which dashboards depend on which explores.
 ---
 
 # Sankey Diagram Generator
@@ -34,7 +34,7 @@ which half of the picture they are looking at.
 |-------|------------------------|---------------------|
 | Dashboard to explore links | Yes | `.dashboard.lookml` files |
 | Explore to view links | Yes | `join:` blocks in any `.lkml` file that defines explores |
-| UGC dashboards | **No** | Built in the Looker UI, never in the repo. Use `queries/system_activity_tile_count.sql` |
+| UGC dashboards | **No** | Built in the Looker UI, never in the repo. Use [`system_activity_tile_count.sql`](./system_activity_tile_count.sql) in this skill's folder |
 | Priority (P0 to P4) | **No** | The client's own prioritisation |
 | Tile counts | **No** | Looker System Activity |
 | Complexity overrides | **No** | Human judgement, via `dashboard-complexity.csv` |

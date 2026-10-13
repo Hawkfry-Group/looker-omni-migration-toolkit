@@ -1,6 +1,6 @@
 ---
 name: materialization-review
-description: Analyze LookML joins for warehouse materialization opportunities. Use when migrating Looker to Omni, optimizing query performance, or reducing explore complexity.
+description: Review LookML joins, required_joins and derived tables to decide what to pre-materialize in the warehouse and what to keep as lazy joins, then suggest an Omni topic structure. Use when planning a Looker to Omni migration, simplifying complex explores before moving to a semantic layer, or reducing Looker query cost and derived table rebuilds.
 ---
 
 # Materialization Review

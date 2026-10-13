@@ -19,16 +19,16 @@ looker-omni-migration-toolkit/
 ├── looker -> /path/to/your/looker-repo    # symlink
 ├── omni -> /path/to/your/omni-repo        # symlink
 ├── CLAUDE.md
-├── .claude/
-│   ├── skills/
-│   │   ├── looker-erd/
-│   │   ├── materialization-review/
-│   │   └── sankey-diagram/
-│   └── agents/
-│       ├── lookml-docs-expert.md
-│       └── omni-docs-lookup.md
-├── queries/
-│   └── system_activity_tile_count.sql
+├── .claude-plugin/                # plugin and marketplace manifests
+├── skills/
+│   ├── looker-erd/
+│   ├── materialization-review/
+│   └── sankey-diagram/            # includes system_activity_tile_count.sql
+├── agents/
+│   ├── lookml-docs-expert.md
+│   └── omni-docs-lookup.md
+├── .claude/                       # symlinks to skills/ and agents/
+├── queries/                       # symlink to the System Activity query
 └── ...
 ```
 
