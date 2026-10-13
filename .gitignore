@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local symlinks to the source Looker repo and target Omni repo
+/looker
+/omni

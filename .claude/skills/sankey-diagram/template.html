@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{TITLE}}</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --charcoal: #222222;
+            --haze: #e4eff0;
+            --turquoise: #71eaed;
+            --dark-blue: #5a8aa5;
+            --mid-blue: #74a1b7;
+            --p0-color: #e74c3c;
+            --p1-color: #e67e22;
+            --p2-color: #f1c40f;
+            --p3-color: #3498db;
+            --p4-color: #95a5a6;
+            --lookml-color: #27ae60;
+            --ugc-color: #9b59b6;
+            --explore-color: #3498db;
+            --view-color: #1abc9c;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: linear-gradient(135deg, var(--haze) 0%, #fff 100%);
+            min-height: 100vh;
+            color: var(--charcoal);
+        }
+
+        .header {
+            background: var(--charcoal);
+            color: white;
+            padding: 24px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .header .subtitle {
+            font-size: 14px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+
+        .header .logo {
+            font-size: 14px;
+            color: var(--turquoise);
+            font-weight: 500;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .filters {
+            background: white;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--dark-blue);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .filter-group select,
+        .filter-group input {
+            padding: 10px 14px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            min-width: 160px;
+            transition: border-color 0.2s;
+        }
+
+        .filter-group select:focus,
+        .filter-group input:focus {
+            outline: none;
+            border-color: var(--turquoise);
+        }
+
+        .toggle-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toggle-btn {
+            padding: 10px 16px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .toggle-btn.active {
+            background: var(--charcoal);
+            color: white;
+            border-color: var(--charcoal);
+        }
+
+        .toggle-btn:hover:not(.active) {
+            border-color: var(--mid-blue);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .stat-card .label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--dark-blue);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .stat-card .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--charcoal);
+        }
+
+        .stat-card .subtext {
+            font-size: 13px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .stat-card.dashboards { border-left: 4px solid var(--p0-color); }
+        .stat-card.explores { border-left: 4px solid var(--explore-color); }
+        .stat-card.views { border-left: 4px solid var(--view-color); }
+        .stat-card.critical { border-left: 4px solid var(--turquoise); }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            gap: 24px;
+        }
+
+        @media (max-width: 1200px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .chart-container h2 {
+            font-size: 18px;
+            margin-bottom: 16px;
+            color: var(--charcoal);
+        }
+
+        #sankey-chart {
+            width: 100%;
+            height: 800px;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .legend {
+            background: white;
+            border-radius: 12px;
+            padding: 20px 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .legend h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: var(--charcoal);
+        }
+
+        .legend-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+
+        .explore-table-container {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .explore-table-container h2 {
+            font-size: 18px;
+            margin-bottom: 16px;
+            color: var(--charcoal);
+        }
+
+        .explore-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .explore-table th {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 2px solid var(--haze);
+            font-weight: 600;
+            color: var(--dark-blue);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+            background: white;
+        }
+
+        .explore-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--haze);
+        }
+
+        .explore-table tr:hover {
+            background: var(--haze);
+        }
+
+        .explore-name {
+            font-weight: 500;
+        }
+
+        .migration-order {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            line-height: 24px;
+            text-align: center;
+            border-radius: 50%;
+            background: var(--charcoal);
+            color: white;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .view-count {
+            color: var(--view-color);
+            font-weight: 600;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .footer a {
+            color: var(--dark-blue);
+            text-decoration: none;
+        }
+
+        .highlight-info {
+            background: var(--haze);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-top: 16px;
+            font-size: 13px;
+        }
+
+        .highlight-info strong {
+            color: var(--charcoal);
+        }
+
+        .priority-indicator {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            color: white;
+            margin-left: 8px;
+        }
+
+        .priority-indicator.p0 { background: var(--p0-color); }
+        .priority-indicator.p1 { background: var(--p1-color); }
+        .priority-indicator.p2 { background: var(--p2-color); }
+        .priority-indicator.p3 { background: var(--p3-color); }
+        .priority-indicator.p4 { background: var(--p4-color); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div>
+            <h1>{{TITLE}}</h1>
+            <p class="subtitle">{{SUBTITLE}}</p>
+        </div>
+        <div class="logo">Hawkfry Group</div>
+    </header>
+
+    <div class="container">
+        <div class="filters">
+            <div class="filter-group">
+                <label>Priority</label>
+                <select id="priority-filter">
+                    <option value="P0" selected>P0 - Critical</option>
+                    <option value="P1">P1 - High</option>
+                    <option value="P2">P2 - Medium</option>
+                    <option value="P3">P3 - Low</option>
+                    <option value="P4">P4 - Minimal</option>
+                    <option value="all">All Priorities</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Dashboard Type</label>
+                <div class="toggle-group">
+                    <button class="toggle-btn active" data-type="all">All</button>
+                    <button class="toggle-btn" data-type="lookml">LookML</button>
+                    <button class="toggle-btn" data-type="ugc">UGC</button>
+                </div>
+            </div>
+            <div class="filter-group">
+                <label>Search</label>
+                <input type="text" id="search-filter" placeholder="Dashboard, explore, or view...">
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card dashboards">
+                <div class="label">Dashboards</div>
+                <div class="value" id="dashboard-count">0</div>
+                <div class="subtext" id="dashboard-subtext">Filtered results</div>
+            </div>
+            <div class="stat-card explores">
+                <div class="label">Explores</div>
+                <div class="value" id="explore-count">0</div>
+                <div class="subtext">Unique explores</div>
+            </div>
+            <div class="stat-card views">
+                <div class="label">Views</div>
+                <div class="value" id="view-count">0</div>
+                <div class="subtext">Unique views</div>
+            </div>
+            <div class="stat-card critical">
+                <div class="label">Most Critical Explore</div>
+                <div class="value" id="critical-explore">-</div>
+                <div class="subtext" id="critical-explore-count">Used by most dashboards</div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="chart-container">
+                <h2>Dashboard &rarr; Explore &rarr; View Flow <span class="priority-indicator p0" id="priority-badge">P0</span></h2>
+                <div id="sankey-chart" style="width: 100%; height: 800px; min-height: 600px;"></div>
+                <div class="highlight-info" id="highlight-info">
+                    <strong>Tip:</strong> Hover over nodes and links for details. Click to highlight connections.
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="legend">
+                    <h3>Node Types</h3>
+                    <div class="legend-items">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: var(--lookml-color)"></div>
+                            <span>LookML Dashboard</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: var(--ugc-color)"></div>
+                            <span>UGC Dashboard</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: var(--explore-color)"></div>
+                            <span>Explore</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: var(--view-color)"></div>
+                            <span>View</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="explore-table-container">
+                    <h2>Dashboard Complexity</h2>
+                    <table class="explore-table">
+                        <thead>
+                            <tr>
+                                <th>Dashboard</th>
+                                <th>Explores</th>
+                                <th>Size</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dashboard-table-body">
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="explore-table-container">
+                    <h2>Explore Migration Priority</h2>
+                    <table class="explore-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Explore</th>
+                                <th>Dashboards</th>
+                                <th>Views</th>
+                            </tr>
+                        </thead>
+                        <tbody id="explore-table-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        Generated with Sankey Diagram Skill | <a href="https://hawkfry.com">Hawkfry Group</a>
+    </footer>
+
+    <script>
+        // Explore to View mappings
+        const exploreViewMap = {{EXPLORE_VIEW_MAP_JSON}};
+
+        // Dashboard data
+        const dashboardData = {{DASHBOARD_DATA_JSON}};
+
+        // State
+        let currentFilters = {
+            priority: "P0",
+            type: "all",
+            search: ""
+        };
+
+        // Complexity overrides from CSV
+        let complexityOverrides = {};
+
+        // Parse CSV text into object
+        function parseCSV(text) {
+            const lines = text.trim().split('\n');
+            const headers = lines[0].split(',').map(h => h.trim());
+            const overrides = {};
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim());
+                if (values.length >= 2 && values[0] && values[1]) {
+                    overrides[values[0]] = {
+                        complexity: values[1].toUpperCase(),
+                        notes: values[2] || ''
+                    };
+                }
+            }
+            return overrides;
+        }
+
+        // Load complexity overrides from CSV
+        async function loadComplexityOverrides() {
+            try {
+                const response = await fetch('./dashboard-complexity.csv');
+                if (!response.ok) throw new Error('CSV not found');
+                const text = await response.text();
+                complexityOverrides = parseCSV(text);
+                console.log(`Loaded ${Object.keys(complexityOverrides).length} complexity overrides from CSV`);
+            } catch (e) {
+                console.log('No CSV overrides found, using calculated values');
+                complexityOverrides = {};
+            }
+        }
+
+        // Get complexity label with CSV override support
+        function getComplexityLabel(exploreCount, dashboardName) {
+            // Check for CSV override first
+            if (dashboardName && complexityOverrides[dashboardName]) {
+                const override = complexityOverrides[dashboardName].complexity;
+                const colorMap = { 'H': '#e74c3c', 'M': '#e67e22', 'L': '#3498db', 'XS': '#95a5a6' };
+                return { label: override, color: colorMap[override] || '#95a5a6' };
+            }
+            // Fall back to calculated complexity
+            if (exploreCount >= 5) return { label: 'H', color: '#e74c3c' };
+            if (exploreCount >= 3) return { label: 'M', color: '#e67e22' };
+            if (exploreCount >= 2) return { label: 'L', color: '#3498db' };
+            return { label: 'XS', color: '#95a5a6' };
+        }
+
+        // Filter data
+        function filterData() {
+            return dashboardData.filter(d => {
+                if (currentFilters.priority !== "all" && d.priority !== currentFilters.priority) return false;
+                if (currentFilters.type === "lookml" && !d.isLookML) return false;
+                if (currentFilters.type === "ugc" && d.isLookML) return false;
+                if (currentFilters.search) {
+                    const search = currentFilters.search.toLowerCase();
+                    const matchesDashboard = d.dashboard.toLowerCase().includes(search);
+                    const matchesExplore = d.explores.some(e => e.toLowerCase().includes(search));
+                    const matchesView = d.explores.some(e => {
+                        const views = exploreViewMap[e] || [];
+                        return views.some(v => v.toLowerCase().includes(search));
+                    });
+                    if (!matchesDashboard && !matchesExplore && !matchesView) return false;
+                }
+                return true;
+            });
+        }
+
+        // Get unique explores and their views
+        function getExploresWithViews(data) {
+            const exploreMap = {};
+            data.forEach(d => {
+                d.explores.forEach(explore => {
+                    if (!exploreMap[explore]) {
+                        exploreMap[explore] = {
+                            dashboardCount: 0,
+                            views: new Set(exploreViewMap[explore] || [])
+                        };
+                    }
+                    exploreMap[explore].dashboardCount++;
+                });
+            });
+            return exploreMap;
+        }
+
+        // Build Sankey data - using unique names for nodes
+        function buildSankeyData(data) {
+            const nodes = [];
+            const links = [];
+            const nodeNames = new Set();
+
+            // Collect unique explores from filtered data
+            const exploresUsed = [];
+            const exploreSet = new Set();
+            data.forEach(d => {
+                d.explores.forEach(e => {
+                    if (!exploreSet.has(e)) {
+                        exploreSet.add(e);
+                        exploresUsed.push(e);
+                    }
+                });
+            });
+
+            // Collect views to show (top 4 per explore)
+            const viewSet = new Set();
+            exploresUsed.forEach(explore => {
+                const views = exploreViewMap[explore] || [];
+                views.slice(0, 4).forEach(v => viewSet.add(v));
+            });
+
+            // 1. Add dashboard nodes (prefix to ensure uniqueness)
+            data.forEach(d => {
+                const nodeName = 'D: ' + d.dashboard;
+                if (!nodeNames.has(nodeName)) {
+                    nodeNames.add(nodeName);
+                    nodes.push({
+                        name: nodeName,
+                        itemStyle: { color: d.isLookML ? '#27ae60' : '#9b59b6' }
+                    });
+                }
+            });
+
+            // 2. Add explore nodes (prefix to ensure uniqueness)
+            exploresUsed.forEach(explore => {
+                const nodeName = 'E: ' + explore;
+                if (!nodeNames.has(nodeName)) {
+                    nodeNames.add(nodeName);
+                    nodes.push({
+                        name: nodeName,
+                        itemStyle: { color: '#3498db' }
+                    });
+                }
+            });
+
+            // 3. Add view nodes (prefix to ensure uniqueness)
+            viewSet.forEach(view => {
+                const nodeName = 'V: ' + view;
+                if (!nodeNames.has(nodeName)) {
+                    nodeNames.add(nodeName);
+                    nodes.push({
+                        name: nodeName,
+                        itemStyle: { color: '#1abc9c' }
+                    });
+                }
+            });
+
+            // 4. Add links: dashboard -> explore (using names)
+            const addedLinks = new Set();
+            data.forEach(d => {
+                d.explores.forEach(explore => {
+                    const sourceName = 'D: ' + d.dashboard;
+                    const targetName = 'E: ' + explore;
+                    const linkKey = sourceName + '|' + targetName;
+                    if (!addedLinks.has(linkKey)) {
+                        addedLinks.add(linkKey);
+                        links.push({ source: sourceName, target: targetName, value: 1 });
+                    }
+                });
+            });
+
+            // 5. Add links: explore -> view (using names)
+            exploresUsed.forEach(explore => {
+                const views = exploreViewMap[explore] || [];
+                views.slice(0, 4).forEach(view => {
+                    if (viewSet.has(view)) {
+                        const sourceName = 'E: ' + explore;
+                        const targetName = 'V: ' + view;
+                        const linkKey = sourceName + '|' + targetName;
+                        if (!addedLinks.has(linkKey)) {
+                            addedLinks.add(linkKey);
+                            links.push({ source: sourceName, target: targetName, value: 1 });
+                        }
+                    }
+                });
+            });
+
+            return { nodes, links };
+        }
+
+        // Initialize chart
+        let chart;
+        function initChart() {
+            try {
+                if (typeof echarts === 'undefined') {
+                    console.error('ECharts library not loaded');
+                    document.getElementById('sankey-chart').innerHTML = '<p style="padding:20px;color:red;">Error: ECharts library failed to load</p>';
+                    return;
+                }
+                const container = document.getElementById('sankey-chart');
+                if (!container) {
+                    console.error('Chart container not found');
+                    return;
+                }
+                chart = echarts.init(container);
+                updateChart();
+
+                window.addEventListener('resize', () => {
+                    if (chart) chart.resize();
+                });
+            } catch (err) {
+                console.error('Chart init error:', err);
+            }
+        }
+
+        function updateChart() {
+            try {
+                const filteredData = filterData();
+
+                if (filteredData.length === 0) {
+                    chart.clear();
+                    return;
+                }
+
+                const { nodes, links } = buildSankeyData(filteredData);
+
+                if (nodes.length === 0 || links.length === 0) {
+                    console.error('No nodes or links to display');
+                    return;
+                }
+
+                const option = {
+                    graphic: [
+                        {
+                            type: 'text',
+                            left: 50,
+                            top: 0,
+                            style: {
+                                text: 'DASHBOARDS',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                fontFamily: 'DM Sans',
+                                fill: '#5a8aa5'
+                            }
+                        },
+                        {
+                            type: 'text',
+                            left: '42%',
+                            top: 0,
+                            style: {
+                                text: 'EXPLORES',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                fontFamily: 'DM Sans',
+                                fill: '#3498db'
+                            }
+                        },
+                        {
+                            type: 'text',
+                            right: 150,
+                            top: 0,
+                            style: {
+                                text: 'VIEWS',
+                                fontSize: 12,
+                                fontWeight: 600,
+                                fontFamily: 'DM Sans',
+                                fill: '#1abc9c'
+                            }
+                        }
+                    ],
+                    tooltip: {
+                        trigger: 'item',
+                        triggerOn: 'mousemove'
+                    },
+                    series: [{
+                        type: 'sankey',
+                        layoutIterations: 32,
+                        emphasis: {
+                            focus: 'adjacency'
+                        },
+                        nodeAlign: 'justify',
+                        orient: 'horizontal',
+                        data: nodes,
+                        links: links,
+                        lineStyle: {
+                            color: 'gradient',
+                            curveness: 0.5,
+                            opacity: 0.4
+                        },
+                        label: {
+                            position: 'right',
+                            fontSize: 11,
+                            fontFamily: 'DM Sans'
+                        },
+                        nodeWidth: 20,
+                        nodeGap: 14,
+                        left: 50,
+                        right: 200,
+                        top: 20,
+                        bottom: 20
+                    }]
+                };
+
+                chart.setOption(option, true);
+                updateStats(filteredData);
+                updateDashboardTable(filteredData);
+                updateExploreTable(filteredData);
+                updatePriorityBadge();
+            } catch (err) {
+                console.error('Chart update error:', err);
+            }
+        }
+
+        function updateStats(data) {
+            const explores = new Set();
+            const views = new Set();
+
+            data.forEach(d => {
+                d.explores.forEach(e => {
+                    explores.add(e);
+                    const exploreViews = exploreViewMap[e] || [];
+                    exploreViews.forEach(v => views.add(v));
+                });
+            });
+
+            document.getElementById('dashboard-count').textContent = data.length;
+            document.getElementById('dashboard-subtext').textContent = `${currentFilters.priority === 'all' ? 'All priorities' : currentFilters.priority + ' priority'}`;
+            document.getElementById('explore-count').textContent = explores.size;
+            document.getElementById('view-count').textContent = views.size;
+
+            // Find most critical explore
+            const exploreCounts = {};
+            data.forEach(d => {
+                d.explores.forEach(e => {
+                    exploreCounts[e] = (exploreCounts[e] || 0) + 1;
+                });
+            });
+
+            const sorted = Object.entries(exploreCounts).sort((a, b) => b[1] - a[1]);
+            if (sorted.length > 0) {
+                document.getElementById('critical-explore').textContent = sorted[0][0];
+                document.getElementById('critical-explore-count').textContent = `Used by ${sorted[0][1]} dashboard${sorted[0][1] > 1 ? 's' : ''}`;
+            }
+        }
+
+        function updateDashboardTable(data) {
+            const sorted = [...data].sort((a, b) => b.explores.length - a.explores.length);
+
+            const tbody = document.getElementById('dashboard-table-body');
+            tbody.innerHTML = sorted.map(d => {
+                const complexity = getComplexityLabel(d.explores.length, d.dashboard);
+                const isOverride = complexityOverrides[d.dashboard] ? '•' : '';
+                return `
+                <tr>
+                    <td class="explore-name">${d.dashboard}</td>
+                    <td>${d.explores.length}</td>
+                    <td><span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:4px;background:${complexity.color};color:white;font-weight:600;font-size:11px;" title="${isOverride ? 'Override from CSV' : 'Calculated'}">${complexity.label}${isOverride}</span></td>
+                </tr>
+            `}).join('');
+        }
+
+        function updateExploreTable(data) {
+            const exploreMap = getExploresWithViews(data);
+            const sorted = Object.entries(exploreMap)
+                .map(([name, info]) => ({ name, ...info, viewCount: info.views.size }))
+                .sort((a, b) => b.dashboardCount - a.dashboardCount);
+
+            const tbody = document.getElementById('explore-table-body');
+            tbody.innerHTML = sorted.map((explore, idx) => `
+                <tr>
+                    <td><span class="migration-order">${idx + 1}</span></td>
+                    <td class="explore-name">${explore.name}</td>
+                    <td>${explore.dashboardCount}</td>
+                    <td class="view-count">${explore.viewCount}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updatePriorityBadge() {
+            const badge = document.getElementById('priority-badge');
+            const priority = currentFilters.priority;
+            badge.textContent = priority === 'all' ? 'All' : priority;
+            badge.className = 'priority-indicator ' + (priority === 'all' ? '' : priority.toLowerCase());
+        }
+
+        // Event listeners
+        document.getElementById('priority-filter').addEventListener('change', (e) => {
+            currentFilters.priority = e.target.value;
+            updateChart();
+        });
+
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                currentFilters.type = e.target.dataset.type;
+                updateChart();
+            });
+        });
+
+        document.getElementById('search-filter').addEventListener('input', (e) => {
+            currentFilters.search = e.target.value;
+            updateChart();
+        });
+
+        // Initialize when DOM is ready
+        async function init() {
+            await loadComplexityOverrides();
+            initChart();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>
