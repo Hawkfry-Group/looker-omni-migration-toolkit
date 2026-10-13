@@ -21,13 +21,15 @@ migration/staging/
 
 ## Install
 
-Python 3.9 or later. From this directory (`skills/looker-to-omni-migrator/`):
+Python 3.9 or later. From this directory (`skills/looker-to-omni-migrator/`), which is also where the sample quick start below runs:
 
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Quick start
+
+Run real migrations from your project root (the folder holding the `looker` symlink and `migration/`), calling the script by its path: `python skills/looker-to-omni-migrator/scripts/migrate.py` in this repo, or the skill's install path if you added it as a plugin. Relative paths and defaults (`./looker`, `migration/views.csv`, `migration/staging/`) resolve against the current directory, so running from inside the skill directory would write output into the skill.
 
 Try it on the bundled thelook e-commerce sample without writing anything:
 

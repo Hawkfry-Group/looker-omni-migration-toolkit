@@ -1,13 +1,13 @@
 # Migration Workflow
 
-A migration runs in three steps: views, then (optionally) explore analysis, then topics. All commands run from the skill directory with `python scripts/migrate.py`.
+A migration runs in three steps: views, then (optionally) explore analysis, then topics. All commands run from your project root (the folder holding the `looker` symlink and `migration/`), calling the script by its path. In this repo that is `python skills/looker-to-omni-migrator/scripts/migrate.py`; with the plugin installed, use the skill's install path. Relative defaults resolve against the current directory.
 
 ## Step 1: Migrate views
 
 Migrate shared views first (customers, products), then the views that depend on them.
 
 ```bash
-python scripts/migrate.py --view order_items --phase 0 --owner "Data Team" \
+python skills/looker-to-omni-migrator/scripts/migrate.py --view order_items --phase 0 --owner "Data Team" \
   --looker-repo ./looker --csv migration/views.csv
 ```
 
@@ -27,7 +27,7 @@ To migrate several views, loop over them; there is no batch flag:
 
 ```bash
 for view in users products inventory_items; do
-  python scripts/migrate.py --view "$view" --phase 0 --owner "Team A"
+  python skills/looker-to-omni-migrator/scripts/migrate.py --view "$view" --phase 0 --owner "Team A"
 done
 ```
 
@@ -42,7 +42,7 @@ With Claude, ask in plain language: *"Migrate users, then products, for phase 0,
 Add `--explore-analysis` to a view migration to find the explores that use the view:
 
 ```bash
-python scripts/migrate.py --view order_items --phase 0 --owner "Data Team" --explore-analysis
+python skills/looker-to-omni-migrator/scripts/migrate.py --view order_items --phase 0 --owner "Data Team" --explore-analysis
 ```
 
 This writes `reports/order_items_explore_analysis.md`, listing each explore, its base view, join count, row-level restrictions and a topic suggestion:
@@ -60,7 +60,7 @@ The analysis only counts the view you just migrated as migrated. "Ready" needs t
 Once the views an explore needs are migrated:
 
 ```bash
-python scripts/migrate.py --explore order_items --looker-repo ./looker
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore order_items --looker-repo ./looker
 ```
 
 This writes `order_items.topic.yaml` and `order_items.relationships` to `migration/staging/topics/`, and `order_items_explore.md` to `migration/staging/reports/`. From the test fixture explore (five joins plus an access filter, `sql_always_where`, `always_filter` and an access grant):
@@ -114,7 +114,7 @@ Each explore becomes one topic. To split a large explore, copy the generated top
 ## Access grants and model-level settings
 
 ```bash
-python scripts/migrate.py --parse-access-grants --looker-repo ./looker
+python skills/looker-to-omni-migrator/scripts/migrate.py --parse-access-grants --looker-repo ./looker
 ```
 
 lists every `access_grant` in any `*.lkml` file, with its user attribute and allowed values. See [ACCESS_GRANTS.md](ACCESS_GRANTS.md).

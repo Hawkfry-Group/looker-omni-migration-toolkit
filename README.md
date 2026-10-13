@@ -83,7 +83,7 @@ Then run a skill:
 /sankey-diagram ./dashboard-explore-mapping.md
 ```
 
-The symlinks are gitignored, so your client code never ends up in this repo.
+The symlinks and the `migration/` folder (your scope CSV and generated Omni files) are gitignored, so your client code never ends up in this repo.
 
 ## The Toolkit
 
@@ -104,12 +104,10 @@ The symlinks are gitignored, so your client code never ends up in this repo.
 pip install -r skills/looker-to-omni-migrator/requirements.txt
 ```
 
-Then ask Claude: *"Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A."* Or run the CLI from the skill directory:
+Then ask Claude: *"Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A."* Or run the CLI yourself from the toolkit root, where the `looker` symlink lives (relative paths and the `migration/staging/` output resolve against the current directory):
 
 ```bash
-cd skills/looker-to-omni-migrator
-python scripts/migrate.py --view users --phase 0 --owner "Team A" \
-  --looker-repo examples/simple/thelook --csv examples/migration.csv --dry-run
+python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
 ```
 
 See the [skill README](skills/looker-to-omni-migrator/README.md) for scope rules, flags and limitations.

@@ -4,7 +4,7 @@ Migrate your first Looker view to Omni in about five minutes.
 
 ## 1. Install
 
-Python 3.9 or later. From the skill directory (`skills/looker-to-omni-migrator/`):
+Python 3.9 or later. The sample in step 2 runs from the skill directory (`skills/looker-to-omni-migrator/`):
 
 ```bash
 pip install -r requirements.txt
@@ -75,6 +75,7 @@ Compare them with `examples/simple/expected/users.view.yaml`. To see incremental
 You need:
 
 - **Your Looker repo.** Point `--looker-repo` at it, or symlink it to `./looker` (the default). Every `*.lkml` file under it is searched.
+- **The right working directory.** Run real migrations from your project root (the folder holding the `looker` symlink and `migration/`), calling the script by its path: `python skills/looker-to-omni-migrator/scripts/migrate.py` in this repo, or the skill's install path if you added it as a plugin. Relative paths and defaults (`./looker`, `migration/views.csv`, `migration/staging/`) resolve against the current directory, so running from inside the skill directory would write output into the skill.
 - **A scope CSV.** Default location `migration/views.csv`. Copy `examples/migration.csv` as a starting point. Columns are described in [../reference/CSV_REFERENCE.md](../reference/CSV_REFERENCE.md).
 
 ## 4. Migrate with Claude
@@ -85,7 +86,7 @@ Start Claude Code and ask:
 Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A.
 ```
 
-Claude asks for anything missing, runs `python scripts/migrate.py`, lists every MANUAL ACTION REQUIRED item, then summarises the report: what was converted, which dependencies were auto-included, what was not converted and why.
+Claude asks for anything missing, runs the CLI from your project root, lists every MANUAL ACTION REQUIRED item, then summarises the report: what was converted, which dependencies were auto-included, what was not converted and why.
 
 Useful follow-ups:
 
@@ -98,27 +99,27 @@ Useful follow-ups:
 
 ```bash
 # View migration
-python scripts/migrate.py --view users --phase 0 --owner "Team A"
+python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A"
 
 # Merge into existing schema-synced Omni views
-python scripts/migrate.py --view users --phase 0 --owner "Team A" \
+python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A" \
   --omni-source-repo ./omni
 
 # Also analyse explores that use the view (off by default)
-python scripts/migrate.py --view order_items --phase 0 --owner "Data Team" --explore-analysis
+python skills/looker-to-omni-migrator/scripts/migrate.py --view order_items --phase 0 --owner "Data Team" --explore-analysis
 
 # Explore to topic + relationships (no --phase/--owner)
-python scripts/migrate.py --explore order_items
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore order_items
 
 # List access grants
-python scripts/migrate.py --parse-access-grants
+python skills/looker-to-omni-migrator/scripts/migrate.py --parse-access-grants
 ```
 
 To migrate several views, run one command per view:
 
 ```bash
 for view in users order_items products; do
-  python scripts/migrate.py --view "$view" --phase 0 --owner "Team A"
+  python skills/looker-to-omni-migrator/scripts/migrate.py --view "$view" --phase 0 --owner "Team A"
 done
 ```
 

@@ -83,12 +83,12 @@ Generate an interactive Dashboard → Explore → View lineage diagram.
 - Optional complexity overrides via `dashboard-complexity.csv`
 
 #### `looker-to-omni-migrator`
-Convert LookML views and explores into Omni model files. A CSV sets which fields are in scope per phase and owner. Run the CLI from the skill directory (`skills/looker-to-omni-migrator/`) after `pip install -r requirements.txt` (Python 3.9+):
+Convert LookML views and explores into Omni model files. A CSV sets which fields are in scope per phase and owner. Run the CLI from the toolkit root (where the `looker` symlink lives; relative paths and outputs resolve against the current directory) after `pip install -r skills/looker-to-omni-migrator/requirements.txt` (Python 3.9+):
 
 ```bash
-python scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
-python scripts/migrate.py --explore order_items
-python scripts/migrate.py --parse-access-grants
+python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore order_items
+python skills/looker-to-omni-migrator/scripts/migrate.py --parse-access-grants
 ```
 
 **Output:** `{view}.view.yaml` (or `{view}.query.view` for derived tables) and `{view}.migration.md` per view; `{explore}.topic.yaml`, `{explore}_explore.md` and, when at least one join converts, `{explore}.relationships` per explore. Defaults write to `migration/staging/{views,topics,reports}`. After each run, surface every MANUAL ACTION REQUIRED item to the user. See the skill's `SKILL.md` for instructions and `rules/` for conversion rules.

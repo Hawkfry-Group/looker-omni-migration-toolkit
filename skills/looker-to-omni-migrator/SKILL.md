@@ -5,7 +5,7 @@ description: "Migrate Looker views and explores to Omni. Converts LookML views t
 
 # Looker to Omni Migrator
 
-This skill wraps a Python CLI, `scripts/migrate.py`, that converts LookML into Omni model files. You (Claude) collect the inputs, run the CLI from this skill's directory, then review the generated files and report with the user.
+This skill wraps a Python CLI, `scripts/migrate.py`, that converts LookML into Omni model files. You (Claude) collect the inputs, run the CLI from the user's project, then review the generated files and report with the user.
 
 The CLI has three mutually exclusive modes:
 
@@ -31,19 +31,21 @@ For an **explore migration**, you need the explore name and the Looker repo path
 
 ### 2. Run the CLI
 
-Always run from this skill's directory. On a new repo, offer `--dry-run` first: it prints `[dry-run] would write <path> (<n> bytes)` for each file and writes nothing.
+Run from the root of the user's project (the directory holding the `looker` symlink and `migration/`), calling the script by its path inside this skill's base directory, shown as `<skill-dir>` below. Relative paths such as `./looker`, `migration/views.csv` and `./migration/staging` resolve against the current directory, so never `cd` into the skill directory for a real migration; outputs would land inside the skill. If the Python packages are missing, install them once with `pip install -r <skill-dir>/requirements.txt`.
+
+On a new repo, offer `--dry-run` first: it prints `[dry-run] would write <path> (<n> bytes)` for each file and writes nothing.
 
 ```bash
-python scripts/migrate.py --view users --phase 0 --owner "Team A" \
+python <skill-dir>/scripts/migrate.py --view users --phase 0 --owner "Team A" \
   --looker-repo ./looker --csv migration/views.csv
 ```
 
 ```bash
-python scripts/migrate.py --explore order_items --looker-repo ./looker
+python <skill-dir>/scripts/migrate.py --explore order_items --looker-repo ./looker
 ```
 
 ```bash
-python scripts/migrate.py --parse-access-grants --looker-repo ./looker
+python <skill-dir>/scripts/migrate.py --parse-access-grants --looker-repo ./looker
 ```
 
 Other flags:

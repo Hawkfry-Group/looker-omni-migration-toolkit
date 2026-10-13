@@ -1,6 +1,6 @@
 # Command Reference
 
-Run every command from the skill directory (`skills/looker-to-omni-migrator/`):
+Commands below are written as `python scripts/migrate.py`, as run from the skill directory, which is right for the bundled `examples/`. For your own project, run from the project root and call the script by its path (`python skills/looker-to-omni-migrator/scripts/migrate.py` in this repo, or the installed skill's path) so `./looker`, `migration/views.csv` and `migration/staging/` resolve in your project:
 
 ```bash
 python scripts/migrate.py <mode> [options]

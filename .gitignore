@@ -5,3 +5,6 @@
 # Local symlinks to the source Looker repo and target Omni repo
 /looker
 /omni
+
+# Migration scope CSV and generated Omni output (looker-to-omni-migrator)
+/migration/
