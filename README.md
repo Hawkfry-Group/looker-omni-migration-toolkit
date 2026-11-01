@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <b>See your whole Looker estate before you move a single explore.</b><br>
-  Claude Code skills that map explores, size the work and plan what to materialize, so your Omni migration starts with a plan instead of a guess.
+  <b>Map, plan and migrate your Looker estate to Omni.</b><br>
+  Agent skills and a review-first converter for tracing dependencies, sizing the work, planning the target model and generating Omni model files from LookML.
 </p>
 
 ---
@@ -32,6 +32,8 @@
 </table>
 
 Both examples are real output, generated from Looker's public [thelook eCommerce](https://github.com/looker-open-source/thelookevent) project. Click either screenshot to open the live, interactive version: [ERD](https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-erd.html) · [Sankey](https://hawkfry-group.github.io/looker-omni-migration-toolkit/examples/sample-sankey.html). Source details are in [examples/README.md](examples/README.md).
+
+The toolkit also includes **`looker-to-omni-migrator`**, a Python CLI and agent skill that turns scoped LookML views and explores into reviewable Omni views, query views, topics and relationships. Unsupported or ambiguous logic is flagged as **MANUAL ACTION REQUIRED** instead of being guessed.
 
 ## Quick Start
 
@@ -60,7 +62,7 @@ npx skills add Hawkfry-Group/looker-omni-migration-toolkit
 
 ### Or Clone and Run
 
-You need [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), your Looker repository (LookML), and optionally your Omni model repository.
+You need [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) or another `SKILL.md` compatible agent, your Looker repository (LookML), and optionally your Omni model repository. The migrator needs Python 3.9 or later.
 
 ```bash
 # 1. Clone the toolkit
@@ -83,6 +85,14 @@ Then run a skill:
 /sankey-diagram ./dashboard-explore-mapping.md
 ```
 
+To generate Omni model files, ask your agent to use `looker-to-omni-migrator`, or run its CLI directly after installing its Python requirements:
+
+```bash
+pip install -r skills/looker-to-omni-migrator/requirements.txt
+python skills/looker-to-omni-migrator/scripts/migrate.py \
+  --view users --phase 0 --owner "Team A" --dry-run
+```
+
 The symlinks and the `migration/` folder (your scope CSV and generated Omni files) are gitignored, so your client code never ends up in this repo.
 
 ## The Toolkit
@@ -98,13 +108,13 @@ The symlinks and the `migration/` folder (your scope CSV and generated Omni file
 
 ### Migrating Views and Explores
 
-`looker-to-omni-migrator` does the conversion once you have a plan. A CSV lists the fields to move in each phase; the skill writes `{view}.view.yaml` (or `{view}.query.view` for derived tables), `{explore}.topic.yaml` and `{explore}.relationships`, plus a migration report per view and explore that flags everything needing manual action. It needs Python 3.9 or later:
+`looker-to-omni-migrator` does the conversion once you have a plan. A CSV lists the fields to move in each phase; the skill writes `{view}.view.yaml` (or `{view}.query.view` for derived tables), `{explore}.topic.yaml` and `{explore}.relationships`, plus a migration report for every run. It also lists Looker access grants for manual recreation in Omni. Anything it cannot translate safely is surfaced as MANUAL ACTION REQUIRED. It needs Python 3.9 or later:
 
 ```bash
 pip install -r skills/looker-to-omni-migrator/requirements.txt
 ```
 
-Then ask Claude: *"Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A."* Or run the CLI yourself from the toolkit root, where the `looker` symlink lives (relative paths and the `migration/staging/` output resolve against the current directory):
+Then ask your agent: *"Use the looker-to-omni-migrator skill to migrate the users view for phase 0, owner Team A."* Or run the CLI yourself from the toolkit root, where the `looker` symlink lives (relative paths and the `migration/staging/` output resolve against the current directory):
 
 ```bash
 python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
@@ -140,8 +150,8 @@ flowchart LR
 
 1. **Analyse.** Run `/looker-erd` to see every explore and its risk. Run `/sankey-diagram` to see which dashboards depend on which explores. Run the System Activity query to catch everything the repo cannot show.
 2. **Plan.** Group content by shared explores. Start with green (low risk) explores to prove the approach. Run `/materialization-review` to decide what moves into the warehouse first.
-3. **Migrate.** Shared views first (`dim_date`, `dim_customer`), then explores in dependency order. If explore A extends B, migrate B first. `looker-to-omni-migrator` converts each view and explore and reports what needs manual work.
-4. **Validate.** Compare source and target, then test content against the migrated topics.
+3. **Migrate.** Define the fields, phase and owner in the scope CSV. Convert shared views first (`dim_date`, `dim_customer`), then explores in dependency order. If explore A extends B, migrate B first. Review every generated report and resolve each MANUAL ACTION REQUIRED item before promotion.
+4. **Validate.** Load the generated model files into an Omni branch, compare source and target, then test content against the migrated topics. The converter does not validate against a live Omni instance.
 
 ## Reading the Output
 
