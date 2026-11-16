@@ -121,10 +121,12 @@ What happens to explore features:
 | `sql_always_where`, `sql_always_having` | `always_where_sql`, `always_having_sql` (verify) |
 | `required_access_grants`, `hidden`, `group_label` | carried (define the grants in Omni) |
 | `always_filter` with `N days ago for N days` (also weeks, months), a string value or list, or one number | topic `default_filters` entry with `required: true` (verify) |
-| `always_filter` with any other expression (`90 days`, `last month`, `today`) or no value | not written; reported with the Looker expression |
+| `always_filter` with a named period on a date field (`last month`, `this week`, `today`, ...) | `is: last month` with `required: true` (periods other than `last month`: verify) |
+| `always_filter` with any other expression (`90 days`, `next month`) or no value | not written; reported with the Looker expression |
+| explore and join `fields:` | topic `fields:` selectors (`all_views.*, -view.a`; `-view.*, view.x`); reported when a list cannot be resolved |
 | `extends` | topic `extends` plus the merged joins and settings of the parent chain; reported and not merged if a parent cannot be found |
 | `extension: required` | topic `template: true` |
-| `conditionally_filter`, `fields:`, `always_join`, `required_joins`, join-level grants | reported only |
+| `conditionally_filter`, `always_join`, `required_joins`, join-level grants | reported only |
 
 The join definitions are topic-scoped: they live in the topic file and apply to that topic only, so two explores can join the same views differently. To keep one model-wide relationships file instead, add `--relationships-file`: the joins are then written to `{explore}.relationships` (only when at least one join converts; a stale file from an earlier run is removed when a run produces no joins) and the CLI warns when another `.relationships` file in the output directory joins the same two views differently.
 

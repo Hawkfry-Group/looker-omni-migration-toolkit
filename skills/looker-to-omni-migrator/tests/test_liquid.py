@@ -203,8 +203,10 @@ class TestParameterValue:
     def test_yesno_parameter_value_is_not_converted(self):
         assert "not confirmed" in blocked("x = {% parameter flag %}")
 
-    def test_parameter_in_a_comment_is_not_converted(self):
-        assert "comment" in blocked("SELECT 1 -- {% parameter min_price %}")
+    def test_parameter_in_a_comment_goes_with_the_comment(self):
+        translation = translate("SELECT 1 -- {% parameter min_price %}")
+        assert translation.sql == "SELECT 1"
+        assert translation.fields == []
 
 
 # ----------------------------------------------------------------------

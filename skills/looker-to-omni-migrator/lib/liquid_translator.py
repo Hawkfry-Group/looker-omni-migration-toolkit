@@ -29,6 +29,14 @@ cannot be resolved, the whole block is left unconverted:
 `LiquidTranslation.sql` is None and `blockers` names every construct that
 stopped it.
 
+## Comments
+
+A SQL comment (`-- ...` or `/* ... */`) that holds Liquid is removed from the
+output: a comment has no effect on the query. It is only removed when the
+Liquid blocks opened in it are closed in it (see `remove_liquid_comments`).
+Liquid inside a quoted string or quoted identifier still follows the rules
+below.
+
 ## Quotes
 
 Omni renders a `string` value as a quoted SQL literal, a `number` bare and a
@@ -59,7 +67,7 @@ else:
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 _IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
 _REF = _IDENT + r'(?:\.' + _IDENT + r')?'
@@ -86,6 +94,9 @@ FILTER_TYPE_MAP = {
     'date_time': 'timestamp',
     'yesno': 'boolean',
 }
+
+# Report line for a SQL comment removed because it holds Liquid
+COMMENT_REMOVED = "SQL comment containing Liquid removed"
 
 FILTER_KINDS = ('parameter', 'filter')
 DATE_TYPES = {'date', 'date_time', 'time'}
@@ -148,6 +159,7 @@ class LiquidConstruct:
     quote: Optional[str] = None  # the quote character it sits in
     wrapped: bool = False  # the quotes hold this construct and nothing else
     quote_span: Optional[Tuple[int, int]] = None  # (opening quote, after the closing quote) when wrapped
+    comment_span: Optional[Tuple[int, int]] = None  # (start, end) of the SQL comment it sits in
 
 
 @dataclass
@@ -264,11 +276,20 @@ def scan_liquid(sql: str) -> Tuple[List[LiquidConstruct], List[str]]:
         (constructs in order, problems): a problem is a `{%` or `{{` that is
         never closed
     """
+    constructs, problems, _ = _scan(sql)
+    return constructs, problems
+
+
+def _scan(sql: str) -> Tuple[List[LiquidConstruct], List[str], List[Tuple[int, int]]]:
+    """`scan_liquid`, plus the (start, end) span of every SQL comment"""
     constructs: List[LiquidConstruct] = []
     problems: List[str] = []
+    comments: List[Tuple[int, int]] = []
     state: Optional[str] = None  # None (code), a quote character, '--' or '/*'
     quote_open = -1
+    comment_open = -1
     in_quote: List[LiquidConstruct] = []
+    in_comment: List[LiquidConstruct] = []
     i, n = 0, len(sql)
 
     def close_quote(position: int):
@@ -276,6 +297,11 @@ def scan_liquid(sql: str) -> Tuple[List[LiquidConstruct], List[str]]:
             item.wrapped = len(in_quote) == 1 and item.start == quote_open + 1 and item.end == position
             if item.wrapped:
                 item.quote_span = (quote_open, position + 1)
+
+    def close_comment(end: int):
+        comments.append((comment_open, end))
+        for item in in_comment:
+            item.comment_span = (comment_open, end)
 
     while i < n:
         if sql.startswith('{%', i) or sql.startswith('{{', i):
@@ -287,6 +313,7 @@ def scan_liquid(sql: str) -> Tuple[List[LiquidConstruct], List[str]]:
             item = _classify(sql[i:j + 2], i)
             if state in ('--', '/*'):
                 item.context = 'comment'
+                in_comment.append(item)
             elif state is not None:
                 item.context, item.quote = 'quoted', state
                 in_quote.append(item)
@@ -299,9 +326,11 @@ def scan_liquid(sql: str) -> Tuple[List[LiquidConstruct], List[str]]:
             if ch in '\'"`':
                 state, quote_open, in_quote = ch, i, []
             elif sql.startswith('--', i):
-                state = '--'
+                state, comment_open, in_comment = '--', i, []
             elif sql.startswith('/*', i):
-                state = '/*'
+                state, comment_open, in_comment = '/*', i, []
+                i += 2  # `/*/` opens a comment, it does not also close it
+                continue
         elif state in ('\'', '"'):
             if ch == '\\':
                 i += 2
@@ -318,13 +347,126 @@ def scan_liquid(sql: str) -> Tuple[List[LiquidConstruct], List[str]]:
                 state = None
         elif state == '--':
             if ch == '\n':
+                close_comment(i)
                 state = None
         elif state == '/*' and sql.startswith('*/', i):
+            close_comment(i + 2)
             state = None
             i += 2
             continue
         i += 1
-    return constructs, problems
+    if state in ('--', '/*'):
+        close_comment(n)
+    return constructs, problems, comments
+
+
+# Liquid tags that open a block closed by `end<name>`, and the tags that only
+# make sense inside one
+_BLOCK_OPENERS = {'if', 'unless', 'case', 'for', 'capture', 'tablerow', 'condition', 'comment', 'raw'}
+_BLOCK_BRANCHES = {'else', 'elsif', 'when', 'break', 'continue'}
+_TAG_NAME_RE = re.compile(r'\{%-?\s*([A-Za-z_]+)')
+
+
+def _unbalanced_block(items: List[LiquidConstruct]) -> Optional[str]:
+    """
+    The Liquid block tag that `items` (the Liquid of one run of comments)
+    leaves open or closes without opening it; None when every block opened
+    in the run is closed in it
+    """
+    open_tags: List[str] = []
+    for item in items:
+        match = _TAG_NAME_RE.match(item.raw)
+        if not match:
+            continue
+        name = match.group(1)
+        if name in _BLOCK_OPENERS:
+            open_tags.append(name)
+        elif name.startswith('end'):
+            if not open_tags or open_tags[-1] != name[3:]:
+                return f"`{{% {name} %}}`"
+            open_tags.pop()
+        elif name in _BLOCK_BRANCHES and not open_tags:
+            return f"`{{% {name} %}}`"
+    return f"`{{% {open_tags[-1]} %}}`" if open_tags else None
+
+
+def remove_liquid_comments(sql: str) -> Tuple[Optional[str], List[str], List[str]]:
+    """
+    Remove every SQL comment that holds Liquid (a comment has no effect on
+    the query)
+
+    Looker renders Liquid before the SQL is read, so Liquid in a comment can
+    still reach the code around it: `-- {% if x %}` on one line and
+    `-- {% endif %}` three lines below make the code between them
+    conditional. A comment is therefore only removed when the Liquid blocks
+    opened in it are closed in it, or in the comments that follow it with
+    nothing but whitespace between them (a commented-out multi-line block).
+    An optimizer hint (`/*+ ... */`) is not removed either.
+
+    Returns:
+        (sql without those comments, blockers, removed): `sql` is None when
+        a comment cannot be removed safely, and `blockers` says why;
+        `removed` holds a short form of each comment removed.
+    """
+    constructs, problems, comments = _scan(sql)
+    liquid: Dict[Tuple[int, int], List[LiquidConstruct]] = {}
+    for item in constructs:
+        if item.context == 'comment' and item.comment_span is not None:
+            liquid.setdefault(item.comment_span, []).append(item)
+    if problems or not liquid:
+        return sql, [], []
+
+    # Runs of comments with only whitespace between them
+    runs: List[List[Tuple[int, int]]] = []
+    for span in comments:
+        if runs and not sql[runs[-1][-1][1]:span[0]].strip():
+            runs[-1].append(span)
+        else:
+            runs.append([span])
+
+    blockers: List[str] = []
+    doomed: List[Tuple[int, int]] = []
+    for run in runs:
+        spans = [span for span in run if span in liquid]
+        if not spans:
+            continue
+        unbalanced = _unbalanced_block([item for span in spans for item in liquid[span]])
+        if unbalanced:
+            blockers.append(
+                f"`{_short(sql[spans[0][0]:spans[0][1]])}`: SQL comment with a Liquid block tag ({unbalanced}) that "
+                f"is not opened and closed inside the comment, so it can change the SQL outside it"
+            )
+            continue
+        for span in spans:
+            if sql.startswith('/*+', span[0]):
+                blockers.append(f"`{_short(sql[span[0]:span[1]])}`: optimizer hint that holds Liquid")
+            else:
+                doomed.append(span)
+    if blockers:
+        return None, blockers, []
+
+    out, position, removed = [], 0, []
+    for start, end in doomed:
+        removed.append(_short(sql[start:end]))
+        line_start = sql.rfind('\n', 0, start) + 1
+        before = sql[line_start:start]
+        newline = sql.find('\n', end)
+        after = sql[end:newline if newline >= 0 else len(sql)]
+        if not before.strip() and not after.strip() and line_start >= position:
+            # The comment is the whole line: drop the line
+            out.append(sql[position:line_start])
+            position = newline + 1 if newline >= 0 else len(sql)
+            continue
+        kept = sql[position:start]
+        if sql.startswith('--', start):
+            kept = kept.rstrip(' \t')
+        out.append(kept)
+        # A block comment separates the tokens around it
+        if sql.startswith('/*', start) and kept[-1:].strip() and sql[end:end + 1].strip():
+            out.append(' ')
+        position = end
+    out.append(sql[position:])
+    return ''.join(out), [], removed
 
 
 def unquoted_use_form(sql: str, item: LiquidConstruct) -> Tuple[Optional[str], Optional[str]]:
@@ -439,6 +581,15 @@ def translate_liquid(sql: str, context: Optional[LiquidContext] = None) -> Liqui
     `sql` is None and `blockers` lists each construct that stopped it.
     """
     context = context or LiquidContext()
+    cleaned, comment_blockers, removed = remove_liquid_comments(sql)
+    if cleaned is None:
+        return LiquidTranslation(sql=None, blockers=comment_blockers)
+    if removed:
+        translation = translate_liquid(cleaned, context)
+        if translation.sql is not None:
+            translation.translated = [f"{COMMENT_REMOVED}: `{comment}`" for comment in removed] \
+                + translation.translated
+        return translation
     constructs, blockers = scan_liquid(sql)
     replacements: List[_Replacement] = []
     translated: List[str] = []

@@ -218,7 +218,25 @@ created:
 
 One dimension named after the group. No `timeframes:` or `datatype:`; Omni generates timeframes. The report notes `Looker timeframes [raw, date, month, year] not emitted (Omni generates timeframes)`.
 
-Not converted: `type: duration`, `datatype: epoch`/`yyyymmdd`, `convert_tz: no`, `sql_date`, `sql_start`/`sql_end`:
+`convert_tz: no` is carried (the field keeps the database timezone, with no conversion); `convert_tz: yes` or no `convert_tz` writes nothing:
+
+```lkml
+dimension_group: visited {
+  type: time
+  datatype: date
+  convert_tz: no
+  sql: ${TABLE}.visit_date ;;
+}
+```
+
+```yaml
+visited:
+  tags: [date, temporal, mig_phase_0, verified]
+  sql: visit_date
+  convert_tz: false
+```
+
+Not converted: `type: duration`, `datatype: epoch`/`yyyymmdd`, `sql_date`, `sql_start`/`sql_end`:
 
 ```
 fulfillment: MANUAL ACTION REQUIRED: dimension_group type 'duration' has no automatic Omni conversion
@@ -454,7 +472,14 @@ With that config, a field labelled "SKU Code" is labelled "Product Code". A fiel
 | `sql_always_where` | topic `always_where_sql` |
 | `always_filter: { filters: [orders.created_date: "7 days ago for 7 days"] }` | topic `default_filters`: `orders.created: { time_for_duration: [7 complete days ago, 7 days], required: true }` |
 | `always_filter` with a string value `global`, a list `a,b`, or a number `5` | `is: global`, `is: [a, b]`, `is: 5`, each with `required: true` |
-| `always_filter` with any other expression (`7 days`, `last month`, `today`, `-x`, `>5`) or no value | not written; reported with the Looker expression |
+| `always_filter` on a date field with a named period (`last month`, `this week`, `today`, `yesterday`, ...) | `is: last month`, with `required: true`; periods other than `last month` are flagged for verification |
+| `always_filter` with any other expression (`7 days`, `next month`, `-x`, `>5`) or no value | not written; reported with the Looker expression |
+| explore `fields: [ALL_FIELDS*, -orders.cost]` | topic `fields: [all_views.*, -orders.cost, "-tag:table_key"]` |
+| explore `fields: [orders.id, users.name]` | topic `fields: [-all_views.*, orders.id, users.name, "-tag:table_key"]` |
+| join `fields: [users.id, users.name]` | `-users.*, users.id, users.name` in the topic `fields:` |
+| join `fields: []` / `fields: [-users.email]` | `-users.*` / `-users.email` |
+| `users.contact*` (a set) in a `fields:` list | its member fields, nested and inherited sets expanded; an undefined set leaves the list uncarried (reported) |
+| `users.created_date` in a `fields:` list | `users.created`; excluding only some timeframes of a group leaves the list uncarried (reported) |
 | `conditionally_filter` | reported only |
 | `extends: [base]` | topic `extends: [base]` plus the merged joins, relationships and settings written into the topic |
 | `extension: required` (or `--template`) | topic `template: true` |

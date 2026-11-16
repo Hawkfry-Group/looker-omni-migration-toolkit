@@ -78,6 +78,10 @@ A view, explore or access grant name defined in more than one file stops the run
 
 A `sql_table_name` with Liquid, `${other_view.SQL_TABLE_NAME}`, more than three dot-separated parts, or other unparseable content fails the view. Migrate that view by hand or simplify the LookML.
 
+### SQL_TABLE_NAME cannot be substituted
+
+In derived table SQL, `${view.SQL_TABLE_NAME}` is replaced only when `view` has a literal `sql_table_name`. The error names the case that blocked it: the view is itself a derived table, was not found under `--looker-repo`, is defined more than once, has a templated table name, has no `sql_table_name`, or has refinements. Write the table (or the inlined SQL) into the derived table by hand.
+
 ### Native derived table not supported
 
 `bind_filters`, `bind_all_filters`, `derived_column`, a field selected twice, or an untranslatable filter in an `explore_source` fails the view. Write the query view by hand; see [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
@@ -125,6 +129,9 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `Cross-view fields needing attention` | A field that references a join alias could not be converted or checked, or carries access grants. Write it in the topic's `views:` block by hand, or define the grants |
 | `Join alias x has the name of another view` | Check that the alias means the joined view inside the topic |
 | `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
+| `Named date periods (verify)` | A required filter was written as `is: <period>`. Only `last month` was confirmed on a live Omni instance; check the others return the Looker date range |
+| `Explore field restriction (NOT carried)`, `Join field restriction on x (NOT carried)` | The `fields:` list could not be resolved with confidence (the item gives the reason). Restrict the topic `fields:` by hand |
+| `Field restrictions (carried)` | Check the fields exist under these names in Omni. Omni rejects a query that uses a restricted field, where Looker hides the field |
 | `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |
 | `Explore inheritance (extends)` ... `were not merged` | A parent explore is missing, declared twice or circular. Point `--looker-repo` at the whole project, or merge by hand |
 | `Explore inheritance (extends, merged)` | Migrate the parent explores too, so the topics in `extends:` exist |

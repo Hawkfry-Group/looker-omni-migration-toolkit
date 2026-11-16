@@ -103,7 +103,7 @@ class JoinDefinition:
     type: Optional[str]  # left_outer, inner, etc.
     relationship: Optional[str]  # one_to_one, many_to_one, etc.
     sql_on: Optional[str]  # Join condition
-    fields: Optional[List[str]]  # Specific fields included
+    fields: Optional[List[str]]  # Join-level field restriction; `[]` exposes no fields, None is no restriction
     from_view: Optional[str] = None  # Source view when `from:` is used
     foreign_key: Optional[str] = None
     sql: Optional[str] = None  # Raw `sql:` join (instead of sql_on)
@@ -467,7 +467,8 @@ def _merge_join(base: JoinDefinition, over: JoinDefinition) -> Tuple[JoinDefinit
     values = {}
     partial = False
     for attr in _JOIN_ATTRIBUTES:
-        if _is_set(getattr(over, attr)):
+        # `fields: []` is a value (the join exposes no fields), not an unset parameter
+        if _is_set(getattr(over, attr)) or (attr == 'fields' and over.fields is not None):
             values[attr] = getattr(over, attr)
         else:
             values[attr] = getattr(base, attr)

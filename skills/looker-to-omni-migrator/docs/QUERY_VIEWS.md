@@ -64,7 +64,10 @@ Notes:
 
 - The SQL goes under `sql:` and is reformatted with `sqlparse`; Looker's `;;` is removed. SQL that holds Mustache is not reformatted.
 - The schema is read from the table names in the SQL where possible, otherwise `--default-schema`.
-- `${...}` references (for example `${other_view.SQL_TABLE_NAME}`) in the SQL stop the conversion: MANUAL ACTION REQUIRED, exit 1, nothing is written for the view.
+- `${view.SQL_TABLE_NAME}` is replaced by the table name of the referenced view, verbatim, when that view is found under `--looker-repo` and has a literal `sql_table_name` (its own, or inherited through `extends:`). `FROM ${orders.SQL_TABLE_NAME}` becomes `FROM thelook_ecommerce.orders`, and the report lists the substitution under "Table References Substituted". The SQL does not follow the referenced view if its table changes later.
+- The reference is not substituted, and the conversion stops (MANUAL ACTION REQUIRED, exit 1, nothing written for the view), when the referenced view is itself a derived table, is not found or is defined more than once, has a templated table name (Liquid, `${...}` or a `@{constant}`), has no `sql_table_name`, or has refinements. The message says which case it was.
+- Any other `${...}` reference in the SQL stops the conversion the same way.
+- A SQL comment (`-- ...` or `/* ... */`) that holds Liquid is removed from the SQL and listed in the report under "Liquid translated" as "SQL comment containing Liquid removed". It is removed only when the Liquid blocks opened in it are closed in it, or in the comments directly after it: Looker renders Liquid before the SQL is read, so `-- {% if x %}` and a later `-- {% endif %}` around real SQL would make that SQL conditional, and that case still stops the conversion. Comments without Liquid are kept.
 
 ### Templated SQL (Liquid)
 

@@ -54,7 +54,8 @@ explore: order_items {
 | Explore `required_access_grants` | Copied onto the topic | Define the grant |
 | Explore `access_filter` | Topic `access_filters` (field + user attribute) | Create the user attribute in Omni |
 | Explore `sql_always_where` / `sql_always_having` | Topic `always_where_sql` / `always_having_sql` | Verify the rows match |
-| Explore `always_filter`, `conditionally_filter`, `fields:` restrictions, join-level grants | Not carried | Recreate by hand |
+| Explore and join `fields:` restrictions | Topic `fields:` selectors; a list that cannot be resolved is reported | Verify. Omni rejects queries that use a restricted field, where Looker hides it |
+| Explore `conditionally_filter`, join-level grants, `always_filter` expressions outside the translated forms | Not carried | Recreate by hand |
 | View-level `required_access_grants` or `access_filter` | Reported | Recreate by hand |
 | `{{ _user_attributes['x'] }}` used as a value in SQL | Translated to `{{ omni_attributes.x }}`; reported | Create the user attribute in Omni |
 | `_user_attributes` inside `{% if %}` or with a Liquid filter | Field not converted; reported | Rewrite by hand |

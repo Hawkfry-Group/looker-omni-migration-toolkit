@@ -75,7 +75,8 @@ as MANUAL ACTION REQUIRED in the report, the console and
    translate with confidence. Access-related and carried items are also
    listed as MANUAL ACTION REQUIRED. Not carried, reported: any other
    `always_filter` entry, `conditionally_filter`, `always_join`, join
-   `required_joins`, join `required_access_grants`, field restrictions.
+   `required_joins`, join `required_access_grants`. Explore and join
+   `fields:` restrictions become topic `fields:` selectors.
    An explore with `extension: required` (or `template=True`) gets
    `template: true`.
    Looker aliases are kept and scoped to the topic: an aliased join uses
@@ -152,6 +153,13 @@ from .looker_parser import (
     resolve_view_extends,
     view_from_index,
 )
+from .field_restrictions import (
+    INCLUDE_ALL,
+    FieldRestrictions,
+    TopicViewFields,
+    build_topic_fields,
+    looker_list,
+)
 from .omni_models import (
     OmniDimension,
     OmniFilter,
@@ -177,6 +185,8 @@ from .rule_applier import (
     translate_date_filter_expression,
     translate_filter_expression,
     TimeGroups,
+    CONFIRMED_DATE_PERIODS,
+    NAMED_DATE_PERIODS,
 )
 
 PROVENANCE_TAG = 'in_omni_in_looker_not_csv'
@@ -192,6 +202,8 @@ JOIN_TYPE_MAP = {
     'full_outer': 'full_outer',
     'cross': 'cross',
 }
+# Every topic leaves out the fields tagged as table keys
+DEFAULT_FIELD_EXCLUSION = '-tag:table_key'
 RELATIONSHIP_TYPES = {'many_to_one', 'one_to_one', 'one_to_many', 'many_to_many'}
 
 # always_filter on a date: dimension types, and the dimension_group timeframes
@@ -202,6 +214,7 @@ DATE_FILTER_TIMEFRAMES = ('date', 'time', 'raw')
 _FIELD_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\}')
 # The same reference as Omni writes it, with an optional timeframe: ${view.field[date]}
 _OMNI_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)(?:\[[a-z0-9_]+\])?\}')
+_SQL_TABLE_NAME_RE = re.compile(r'\$\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\.SQL_TABLE_NAME\s*\}')
 _LOCAL_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
 _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_\-]*')
 
@@ -1272,6 +1285,8 @@ class MigrationOrchestrator:
                     for item in scan_liquid(sql)[0]:
                         if item.kind in ('other', 'endcondition', 'user_attribute') or not item.ref:
                             continue
+                        if item.context == 'comment':
+                            continue  # the comment is removed from the SQL, or blocks it
                         target, _ = self._resolve_liquid_ref(name, item.ref, typed=False)
                         if target is None or target.kind not in FILTER_KINDS:
                             continue
@@ -1958,17 +1973,7 @@ class MigrationOrchestrator:
             if explore_info.group_label:
                 topic_extra['group_label'] = explore_info.group_label
                 carried.append("group_label → topic `group_label`")
-            if explore_info.fields:
-                manual.append((
-                    "Explore field restriction (NOT carried)",
-                    f"Looker `fields: {explore_info.fields}`. The topic exposes `all_views.*`; restrict `fields:` manually."
-                ))
             for join in explore_info.joins:
-                if join.fields:
-                    manual.append((
-                        f"Join field restriction on {join.view} (NOT carried)",
-                        f"Looker `fields: {join.fields}`. Restrict the topic `fields:` manually."
-                    ))
                 if join.required_access_grants:
                     manual.append((
                         f"Join access grants on {join.view} (NOT carried)",
@@ -2002,6 +2007,18 @@ class MigrationOrchestrator:
             topic_fields, topic_field_lines = self._topic_scoped_for_topic(topic_views, phase, verified, manual)
             for name, sections in topic_fields.items():
                 topic_view_blocks.setdefault(name, {}).update(sections)
+
+            # Explore and join `fields:` restrictions → topic `fields:` selectors
+            restrictions = self._field_restrictions(explore_info, topic_views, topic_fields, set(skipped))
+            carried.extend(restrictions.carried)
+            manual.extend(restrictions.manual)
+            if restrictions.carried:
+                manual.append((
+                    "Field restrictions (carried)",
+                    "Written to the topic `fields:` list. Looker hides the restricted fields; Omni rejects queries "
+                    "that use them. Verify the fields exist under these names in Omni."
+                    + ''.join(f"\n- {item}" for item in restrictions.verify)
+                ))
             if topic_view_blocks:
                 topic_extra['views'] = {
                     name: {key: topic_view_blocks[name][key]
@@ -2032,7 +2049,7 @@ class MigrationOrchestrator:
                 base_view=base_alias,
                 label=explore_info.label or explore_name.replace('_', ' ').title(),
                 description=explore_info.description or f"Migrated from Looker explore: {explore_name}",
-                fields=["all_views.*", "-tag:table_key"],
+                fields=restrictions.selectors + [DEFAULT_FIELD_EXCLUSION],
                 joins=join_tree,
                 ai_context='\n'.join(ai_context_lines),
                 **topic_extra
@@ -2052,7 +2069,7 @@ class MigrationOrchestrator:
                 explore_name, topic_name, explore_info, relationships, skipped, carried, manual,
                 relationships_file=relationships_file, topic_type=topic_type, inheritance=inheritance,
                 skipped_views=skipped, topic_field_lines=topic_field_lines, prefix=prefix,
-                has_views_block=bool(topic_view_blocks)
+                has_views_block=bool(topic_view_blocks), restrictions=restrictions
             )
 
             # Render everything before writing anything
@@ -2233,9 +2250,11 @@ class MigrationOrchestrator:
             not_carried.append(f"`{explore_info.always_filter}`: no `filters:` could be read from the block")
 
         not_carried_fields: List[str] = []
+        date_keys: Set[str] = set()  # filters on a date field
         for looker_field, expression in pairs:
             quoted = f'`{looker_field}: "{"" if expression is None else expression}"`'
-            key, condition, reason = self._translate_always_filter(explore_info, skipped, looker_field, expression)
+            key, condition, reason, is_date = self._translate_always_filter(
+                explore_info, skipped, looker_field, expression)
             if reason is None and key in filters:
                 reason = f"`{key}` already has a filter from another always_filter entry"
             if reason:
@@ -2243,12 +2262,27 @@ class MigrationOrchestrator:
                 not_carried_fields.append(quoted)
                 continue
             filters[key] = {**condition, 'required': True}
+            if is_date:
+                date_keys.add(key)
             shown = ', '.join(
                 f"{operator}: " + (f"[{', '.join(map(str, value))}]" if isinstance(value, list) else str(value))
                 for operator, value in condition.items()
             )
             carried.append(f"always_filter {quoted} → topic `default_filters` on `{key}` (`{shown}`, `required: true`)")
 
+        unconfirmed = [
+            f"`{key}`: `is: {condition['is']}`" for key, condition in filters.items()
+            if condition.get('is') in NAMED_DATE_PERIODS and condition['is'] not in CONFIRMED_DATE_PERIODS
+            and key in date_keys
+        ]
+        if unconfirmed:
+            manual.append((
+                "Named date periods (verify)",
+                "These required filters use a named period. `is: "
+                + CONFIRMED_DATE_PERIODS[0] + "` was confirmed on a live Omni instance; the periods below use the "
+                "same mechanism and were not confirmed one by one. Verify each returns the Looker date range: "
+                + ', '.join(unconfirmed) + "."
+            ))
         if filters:
             manual.append((
                 "always_filter (carried)",
@@ -2272,11 +2306,14 @@ class MigrationOrchestrator:
         skipped: Set[str],
         looker_field: str,
         expression: Any
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
-        """(Omni filter key, condition, None) or (None, None, reason it is not translated)"""
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str], bool]:
+        """
+        (Omni filter key, condition, None, the field is a date) or
+        (None, None, reason it is not translated, False)
+        """
         view_ref, _, field_name = str(looker_field).partition('.')
         if not field_name:
-            return None, None, "the field is not view-qualified (`view.field`)"
+            return None, None, "the field is not view-qualified (`view.field`)", False
 
         joins = {join.view: join for join in explore_info.joins}
         if view_ref == explore_info.base_alias:
@@ -2284,32 +2321,33 @@ class MigrationOrchestrator:
             looker_view, omni_view = explore_info.base_view, explore_info.base_alias
         elif view_ref in joins:
             if view_ref in skipped:
-                return None, None, f"join `{view_ref}` was not migrated, so the field is not in the topic"
+                return None, None, f"join `{view_ref}` was not migrated, so the field is not in the topic", False
             looker_view, omni_view = joins[view_ref].source_view, view_ref
         else:
-            return None, None, f"`{view_ref}` is not part of the explore"
+            return None, None, f"`{view_ref}` is not part of the explore", False
 
         if expression is None or not str(expression).strip():
-            return None, None, "it has no value (a required default filter needs one)"
+            return None, None, "it has no value (a required default filter needs one)", False
 
         parsed_view = self._full_view(looker_view)
         if parsed_view is None:
-            return None, None, f"view `{looker_view}` was not found under --looker-repo, so the field type is unknown"
+            return None, None, (f"view `{looker_view}` was not found under --looker-repo, so the field type is "
+                                f"unknown"), False
         omni_field, kind, reason = self._filter_target(parsed_view, field_name)
         if reason:
-            return None, None, reason
+            return None, None, reason, False
 
         if kind == 'date':
             condition, reason = translate_date_filter_expression(expression)
             if condition is None:
-                return None, None, reason
+                return None, None, reason, False
         else:
             condition = translate_filter_expression(expression, kind)
             # Only "is <value>" (strings: also a list of values) is carried
             value = condition.get('is') if condition and set(condition) == {'is'} else None
             if value is None or (kind == 'number' and isinstance(value, list)):
-                return None, None, "the expression is outside the forms translated automatically"
-        return f"{omni_view}.{omni_field}", condition, None
+                return None, None, "the expression is outside the forms translated automatically", False
+        return f"{omni_view}.{omni_field}", condition, None, kind == 'date'
 
     @staticmethod
     def _filter_target(looker_view: LookerView, field_name: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2782,7 +2820,8 @@ class MigrationOrchestrator:
         skipped_views: Optional[List[str]] = None,
         topic_field_lines: Optional[List[str]] = None,
         prefix: Optional[str] = None,
-        has_views_block: bool = False
+        has_views_block: bool = False,
+        restrictions: Optional[FieldRestrictions] = None
     ) -> str:
         base = explore_info.base_view
         if explore_info.base_is_aliased:
@@ -2826,6 +2865,8 @@ class MigrationOrchestrator:
                 "",
             ] + topic_field_lines + [""]
 
+        lines += self._field_restriction_lines(explore_info, restrictions)
+
         lines += ["## Join Definitions", ""]
         for join in explore_info.joins:
             status = "NOT migrated" if join.view in skipped else "migrated"
@@ -2861,7 +2902,9 @@ class MigrationOrchestrator:
             "",
             "## Notes",
             "",
-            "- Topic uses `all_views.*` and excludes fields tagged `table_key`",
+            ("- Topic `fields:` carries the Looker field restrictions (see Field restrictions) and excludes fields "
+             "tagged `table_key`" if restrictions is not None and restrictions.restricted
+             else "- Topic uses `all_views.*` and excludes fields tagged `table_key`"),
             "- Looker join types mapped: left_outer → always_left, inner → inner, "
             "full_outer → full_outer, cross → cross (other types are not migrated)",
             relationships_note,
@@ -2869,6 +2912,80 @@ class MigrationOrchestrator:
             "",
         ]
         return '\n'.join(lines)
+
+    def _view_sets(self, view_name: str) -> Dict[str, List[str]]:
+        """The `set:` definitions of a view: its own and the inherited ones (a nearer definition wins)"""
+        view = self._cached_view(view_name)
+        resolution = self._view_resolution(view_name)
+        sets: Dict[str, List[str]] = {}
+        for ancestor in (resolution.ancestors if resolution is not None and not resolution.problem else []):
+            parent = self._cached_view(ancestor)
+            sets.update(parent.sets if parent is not None else {})
+        sets.update(view.sets if view is not None else {})
+        return sets
+
+    def _field_restrictions(
+        self,
+        explore_info: ExploreInfo,
+        topic_views: Dict[str, str],
+        topic_fields: Dict[str, Dict[str, Dict[str, Dict]]],
+        skipped: Set[str]
+    ) -> FieldRestrictions:
+        """
+        Looker explore and join `fields:` → Omni topic `fields:` selectors
+        (see `lib.field_restrictions`)
+
+        `topic_fields` holds the fields this topic writes in its `views:`
+        block: they are in the topic although the view file leaves them out.
+        """
+        join_fields = {join.view: join.fields for join in explore_info.joins}
+        if explore_info.fields is None and all(entries is None for entries in join_fields.values()):
+            return FieldRestrictions(selectors=[INCLUDE_ALL])
+        views: Dict[str, Optional[TopicViewFields]] = {}
+        for name, real in topic_views.items():
+            full = self._full_view(real)
+            info = self._view_field_info(real)
+            resolution = self._view_resolution(real)
+            if full is None or info is None or (resolution is not None and resolution.problem):
+                views[name] = None  # fields not known: a list that names this view is not carried
+                continue
+            written_here = {field for section in topic_fields.get(name, {}).values() for field in section}
+            views[name] = TopicViewFields(
+                real_view=real,
+                fields=info[0],
+                time_groups=info[1],
+                filter_fields=set(full.parameters) | set(full.filters),
+                sets=self._view_sets(real),
+                missing={field: exposed.reason for field, exposed in self._exposed_fields(real).items()
+                         if exposed.reason and field not in written_here}
+            )
+        return build_topic_fields(explore_info.fields, join_fields, views, skipped)
+
+    @staticmethod
+    def _field_restriction_lines(explore_info: ExploreInfo, restrictions: Optional[FieldRestrictions]) -> List[str]:
+        """Report section: the Looker `fields:` lists and the topic selectors they became"""
+        looker = [("explore", explore_info.fields)] + [(f"join `{join.view}`", join.fields)
+                                                       for join in explore_info.joins]
+        looker = [(where, entries) for where, entries in looker if entries is not None]
+        if restrictions is None or not looker:
+            return []
+        lines = [
+            "## Field restrictions",
+            "",
+            "Looker `fields:` lists of the explore and its joins, written as Omni topic `fields:` selectors. Omni "
+            "evaluates selectors by type, not list order: `all_views.*`, then `view.*`, then tags, then "
+            "`view.field`. Looker hides a restricted field; Omni rejects queries that use it. A field listed by "
+            "name stays in the topic even when it is tagged `table_key`.",
+            "",
+        ]
+        lines += [f"- Looker {where}: `fields: {looker_list(entries)}`" for where, entries in looker]
+        lines += [f"- Topic: `fields: [{', '.join(restrictions.selectors + [DEFAULT_FIELD_EXCLUSION])}]`", ""]
+        not_carried = [title for title, _ in restrictions.manual]
+        if not_carried:
+            lines += ["Not carried (see MANUAL ACTION REQUIRED): " + '; '.join(not_carried), ""]
+        if restrictions.notes:
+            lines += ["Entries dropped or mapped:", ""] + [f"- {note}" for note in restrictions.notes] + [""]
+        return lines
 
     @staticmethod
     def _alias_map_lines(explore_info: ExploreInfo, skipped: List[str], relationships_file: bool) -> List[str]:
@@ -3028,11 +3145,6 @@ class MigrationOrchestrator:
                 raw_sql = derived['sql']
                 print(f"      ℹ️  SQL derived table detected ({len(raw_sql)} chars)")
                 sql = self._clean_sql_for_omni(raw_sql)
-                if re.search(r'\$\{[^}]+\}', sql):
-                    raise ValueError(
-                        f"{MANUAL}: the derived table SQL contains ${{...}} references "
-                        f"(e.g. ${{other_view.SQL_TABLE_NAME}}); migrate this view manually"
-                    )
                 templated = ""
                 if has_liquid(sql):
                     translation = translate_liquid(sql, self._liquid_context(looker_view.view_name))
@@ -3044,6 +3156,22 @@ class MigrationOrchestrator:
                     if translations is not None:
                         translations.append(translation)
                     templated = " Liquid was translated to Omni Mustache (see Liquid translated)."
+                # After the Liquid: a SQL comment removed with its Liquid takes its references with it
+                sql, substitutions = self._substitute_table_references(sql, looker_view.view_name)
+                if substitutions:
+                    report_builder.add_advanced_feature(
+                        feature="Table References Substituted",
+                        status="CONVERTED",
+                        details="`${view.SQL_TABLE_NAME}` references to views with a literal `sql_table_name` were "
+                                "replaced by that table name: " + '; '.join(substitutions),
+                        action_required="Check each table name. If the referenced view changes its table later, "
+                                        "this SQL does not follow."
+                    )
+                if re.search(r'\$\{[^}]+\}', sql):
+                    raise ValueError(
+                        f"{MANUAL}: the derived table SQL contains ${{...}} references that are not "
+                        f"`${{view.SQL_TABLE_NAME}}` references to a plain table; migrate this view manually"
+                    )
                 schema = self._extract_schema_from_sql(sql)
                 report_builder.add_advanced_feature(
                     feature="SQL Derived Table",
@@ -3079,6 +3207,77 @@ class MigrationOrchestrator:
             action_required="Confirm the table name and schema."
         )
         return self.default_schema, {'table_name': looker_view.view_name}
+
+    def _plain_table_of(self, view_name: str, current_view: str) -> Tuple[Optional[str], Optional[str], str]:
+        """
+        The literal `sql_table_name` a `${view.SQL_TABLE_NAME}` reference
+        stands for, as (table, view it is inherited from or None, '') or
+        (None, None, reason it is not substituted)
+        """
+        definitions = self._load_views()[0].get(view_name, [])
+        if not definitions:
+            return None, None, f"view `{view_name}` was not found under --looker-repo"
+        if len(definitions) > 1:
+            return None, None, f"view `{view_name}` is defined more than once under --looker-repo"
+        view = definitions[0]
+        if view.refinement_files:
+            return None, None, (f"view `{view_name}` has refinements (`view: +{view_name}`) that are not applied, "
+                                f"so its table is not certain")
+        table, derived, origin = view.sql_table_name, view.derived_table, None
+        if not table and not derived and view.extends:
+            resolution = self._view_resolution(view_name)
+            if resolution is None or resolution.problem:
+                return None, None, (f"the `extends:` of view `{view_name}` could not be resolved"
+                                    + (f" ({resolution.problem})" if resolution is not None else ""))
+            if resolution.source is not None:
+                table, derived = resolution.source.sql_table_name, resolution.source.derived_table
+                origin = resolution.source.origin
+        if derived or view_name == current_view:
+            return None, None, (f"view `{view_name}` is itself a derived table"
+                                + (f" (inherited from `{origin}`)" if origin else ""))
+        if not table or not str(table).strip():
+            return None, None, (f"view `{view_name}` has no `sql_table_name` (Looker would use the view name as "
+                                f"the table; that is not assumed here)")
+        table = str(table).strip()
+        if has_liquid(table) or '${' in table or '@{' in table:
+            return None, None, f"the table name of view `{view_name}` is templated (`{table}`)"
+        return table, origin, ''
+
+    def _substitute_table_references(self, sql: str, current_view: str) -> Tuple[str, List[str]]:
+        """
+        Replace each `${view.SQL_TABLE_NAME}` that points at a plain table
+        with that table name, verbatim
+
+        Returns:
+            (sql, ["`${view.SQL_TABLE_NAME}` → `table`"]) for the report
+
+        Raises:
+            ValueError: a reference points at a derived table, a view that
+                is not found, or a templated table name
+        """
+        substitutions: List[str] = []
+        problems: List[str] = []
+
+        def substitute(match):
+            name = match.group(1)
+            reference = f"${{{name}.SQL_TABLE_NAME}}"
+            table, origin, reason = self._plain_table_of(name, current_view)
+            if table is None:
+                problems.append(f"`{reference}`: {reason}")
+                return match.group(0)
+            shown = f"`` {table} ``" if '`' in table else f"`{table}`"
+            item = f"`{reference}` → {shown}" + (f" (inherited from `{origin}`)" if origin else "")
+            if item not in substitutions:
+                substitutions.append(item)
+            return table
+
+        out = _SQL_TABLE_NAME_RE.sub(substitute, sql)
+        if problems:
+            raise ValueError(
+                f"{MANUAL}: the derived table SQL references a table through SQL_TABLE_NAME that cannot be "
+                f"substituted: " + '; '.join(dict.fromkeys(problems)) + ". Migrate this view manually"
+            )
+        return out, substitutions
 
     def _clean_sql_for_omni(self, sql: str) -> str:
         """Remove `${TABLE}.` prefixes from derived table SQL"""

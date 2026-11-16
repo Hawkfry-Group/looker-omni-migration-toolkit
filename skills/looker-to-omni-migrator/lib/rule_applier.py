@@ -95,7 +95,8 @@ A `type: time` dimension_group becomes a single Omni dimension named after
 the group. Looker `timeframes:` are not emitted (Omni builds timeframes for
 date/timestamp columns itself); the original list is recorded in the
 report. Not converted (reported): `type: duration`, `datatype` other than
-timestamp/datetime/date (e.g. epoch, yyyymmdd), `convert_tz: no`, `sql_date`.
+timestamp/datetime/date (e.g. epoch, yyyymmdd), `sql_date`. `convert_tz: no`
+becomes `convert_tz: false`.
 
 ## Not Migrated
 
@@ -220,6 +221,10 @@ CALCULATED_MEASURE_TYPES = {'number', 'string', 'yesno', 'date'}
 # Dimension types / parameters with no automatic Omni translation
 UNSUPPORTED_DIMENSION_TYPES = {'tier', 'location', 'distance'}
 UNSUPPORTED_DIMENSION_PARAMS = ('case', 'tiers')
+
+# Dimension types that hold a date or time: `convert_tz: no` is carried on these
+# (on any other type Looker ignores it)
+TZ_DIMENSION_TYPES = {'date', 'date_time', 'time'}
 
 # Field parameters that are dropped (and noted) rather than converted
 DROPPED_FIELD_PARAMS = ('drill_fields', 'link', 'links', 'html', 'map_layer_name')
@@ -452,32 +457,44 @@ def translate_filter_expression(expression: Any, kind: Optional[str] = 'string')
 
 
 _DURATION_AGO_FOR = re.compile(
-    r'(\d+)\s+(day|week|month)s\s+ago\s+for\s+(\d+)\s+(day|week|month)s', re.IGNORECASE)
+    r'(\d+)\s+(day|week|month)s?\s+ago\s+for\s+(\d+)\s+(day|week|month)s?', re.IGNORECASE)
 _BARE_DURATION = re.compile(r'\d+\s+(?:day|week|month)s?', re.IGNORECASE)
+# Looker named periods that Omni accepts as `is: <period>` on a date field
+NAMED_DATE_PERIODS = (
+    'last month', 'this month', 'last week', 'this week', 'last year', 'this year', 'last quarter',
+    'this quarter', 'today', 'yesterday',
+)
+# Named periods confirmed on a live Omni instance; the others use the same
+# mechanism and are reported for verification
+CONFIRMED_DATE_PERIODS = ('last month',)
 
 
 def translate_date_filter_expression(expression: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Translate a Looker date filter expression into an Omni filter condition
 
-    Only `N days ago for N days` (also weeks and months, same N and unit on
-    both sides, N of 2 or more) is translated, to
-    `time_for_duration: [N complete days ago, N days]`. "complete" matters:
-    Looker's "7 days ago for 7 days" is the last 7 complete days, without
-    today.
+    - `N days ago for N days` (also weeks and months, same N and unit on
+      both sides, N of 1 or more) becomes
+      `time_for_duration: [N complete days ago, N days]`. "complete"
+      matters: Looker's "7 days ago for 7 days" is the last 7 complete days,
+      without today.
+    - A named period (`NAMED_DATE_PERIODS`: `last month`, `this week`,
+      `today`, ...) becomes `is: <period>`.
 
     Returns:
-        (condition, None) when translated, else (None, reason). Named periods
-        (`last month`, `today`, ...) and `N days` (which includes today so
-        far) have no confirmed Omni form and are never translated.
+        (condition, None) when translated, else (None, reason). `N days`
+        (which includes today so far) has no confirmed Omni form and is
+        never translated.
     """
     if not isinstance(expression, str) or not expression.strip():
         return None, "it has no value"
     expr = ' '.join(expression.split())
+    if expr.lower() in NAMED_DATE_PERIODS:
+        return {'is': expr.lower()}, None
     match = _DURATION_AGO_FOR.fullmatch(expr)
     if match:
         count, unit, for_count, for_unit = (g.lower() for g in match.groups())
-        if count == for_count and unit == for_unit and int(count) >= 2:
+        if count == for_count and unit == for_unit and int(count) >= 1:
             n = int(count)
             return {'time_for_duration': [f"{n} complete {unit}s ago", f"{n} {unit}s"]}, None
     elif _BARE_DURATION.fullmatch(expr):
@@ -820,6 +837,17 @@ class RuleApplier:
             return risk_level
         return "MEDIUM" if risk_level == "LOW" else risk_level
 
+    @staticmethod
+    def _apply_convert_tz(looker_field: Dict, kwargs: Dict, changes: List[str]):
+        """
+        Looker `convert_tz: no` -> Omni `convert_tz: false` (the field keeps
+        the database timezone, with no conversion). `yes`, Looker's default,
+        is also Omni's default and writes nothing.
+        """
+        if str(looker_field.get('convert_tz', 'yes')).lower() == 'no':
+            kwargs['convert_tz'] = False
+            changes.append("convert_tz: no → convert_tz: false (database timezone, no conversion)")
+
     def resolve_field_type(self, field_ref: str) -> Optional[str]:
         """Looker type of a filtered field (same-view name or view.field), None if unknown"""
         if '.' in field_ref:
@@ -1058,6 +1086,8 @@ class RuleApplier:
             changes.append("Marked as hidden: true")
         if looker_dim.get('group_label'):
             dim_kwargs['group_label'] = looker_dim['group_label']
+        if dim_type in TZ_DIMENSION_TYPES:
+            self._apply_convert_tz(looker_dim, dim_kwargs, changes)
         risk_level = self._apply_format(looker_dim, dim_kwargs, changes, warnings, risk_level)
         if 'ai_context' in metadata:
             dim_kwargs['ai_context'] = metadata['ai_context']
@@ -1283,11 +1313,6 @@ class RuleApplier:
                 f"{MANUAL}: dimension_group datatype '{datatype}' needs an explicit conversion to a date/timestamp"
             )
             return self._failed(changes, warnings, dropped=dropped)
-        if str(looker_dim_group.get('convert_tz', 'yes')).lower() == 'no':
-            warnings.append(
-                f"{MANUAL}: dimension_group has convert_tz: no; check Omni's timezone handling for this field"
-            )
-            return self._failed(changes, warnings, dropped=dropped)
         for param in ('sql_date', 'sql_start', 'sql_end'):
             if looker_dim_group.get(param):
                 warnings.append(f"{MANUAL}: dimension_group uses {param}, which is not converted automatically")
@@ -1347,6 +1372,7 @@ class RuleApplier:
             changes.append("Marked as hidden: true")
         if looker_dim_group.get('group_label'):
             dim_kwargs['group_label'] = looker_dim_group['group_label']
+        self._apply_convert_tz(looker_dim_group, dim_kwargs, changes)
         if self.canonical_synonyms(field_name):
             dim_kwargs['synonyms'] = self.canonical_synonyms(field_name)
 

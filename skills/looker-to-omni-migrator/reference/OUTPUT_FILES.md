@@ -71,6 +71,7 @@ Notes:
 - `sql:` is omitted where a dimension reads its own column (`id`, `email`).
 - `email` is out of scope, so it is hidden and tagged only `in_omni_in_looker_not_csv`. Its access grant is still copied.
 - A three-part `sql_table_name` adds a `catalog:` key.
+- A date dimension from a Looker field with `convert_tz: no` has `convert_tz: false`.
 - Generated `label`, `description` and `ai_context` are a starting point; improve them during review.
 
 ### Template and extending views
@@ -196,7 +197,8 @@ With `--relationships-file` the topic has no `relationships:` key and the same l
 - `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it. It is written in both modes.
 - `views` is written when the explore has a base alias (`<alias>: { extends: [real_view] }`), a `view_label` that differs from the view's label, or fields that reference a join alias of the topic (written like the fields of a view file, under the view's name in the topic).
 - With `--topic-prefix VALUE` the files are `{VALUE}__{explore}.topic.yaml` and `{VALUE}__{explore}_explore.md`.
-- `default_filters` holds the explore's `always_filter` entries that could be translated, each with `required: true`.
+- `fields` is `[all_views.*, "-tag:table_key"]` unless the explore or a join has a `fields:` restriction. Then it holds the selectors the restrictions became, for example `[all_views.*, -users.*, users.id, users.name, -order_items.cost, "-tag:table_key"]`, and the explore report has a "Field restrictions" section with the Looker lists, the topic list and every entry dropped or mapped.
+- `default_filters` holds the explore's `always_filter` entries that could be translated, each with `required: true`. A named period is written as `is: last month`.
 - `extends` is written when the explore's parent chain was resolved; the topic then also carries the merged joins, relationships and settings. `template: true` is written for an explore with `extension: required`, or with `--template`.
 - Joins that were not migrated are listed in the report and, with `--relationships-file`, in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`).
 - A `{explore}.relationships` left by an earlier run is removed when the run writes the relationships into the topic, or produces no joins.

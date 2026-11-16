@@ -221,14 +221,13 @@ class TestUntranslatableAlwaysFilter:
     @pytest.mark.parametrize("field,expression,reason", [
         ("orders.created_date", "7 days", "includes today"),
         ("orders.created_date", "90 days", "includes today"),
-        ("orders.created_date", "last month", "outside the forms"),
-        ("orders.created_date", "this month", "outside the forms"),
-        ("orders.created_date", "today", "outside the forms"),
-        ("orders.created_date", "yesterday", "outside the forms"),
         ("orders.created_date", "7 days ago for 3 days", "outside the forms"),
         ("orders.created_date", "7 days ago for 1 weeks", "outside the forms"),
-        ("orders.created_date", "1 days ago for 1 days", "outside the forms"),
         ("orders.created_date", "2 years ago for 2 years", "outside the forms"),
+        ("orders.created_date", "next month", "outside the forms"),
+        ("orders.created_date", "last 2 months", "outside the forms"),
+        ("orders.created_date", "0 days ago for 0 days", "outside the forms"),
+        ("orders.created_week", "last month", "timeframe"),
         ("orders.created_date", "2024-01-01", "outside the forms"),
         ("orders.created_week", "2 weeks ago for 2 weeks", "timeframe"),
         ("orders.shipped_date", "7 days ago for 7 days", "timeframe"),
@@ -282,12 +281,12 @@ class TestUntranslatableAlwaysFilter:
 
     def test_translated_and_untranslated_together(self, tmp_path):
         repo = make_repo(tmp_path, always_filter_explore(
-            'orders.status: "complete", orders.created_date: "last month"'))
+            'orders.status: "complete", orders.created_date: "7 days"'))
         _, topic, report = migrate(tmp_path, repo)
         assert topic["default_filters"] == {"orders.status": {"is": "complete", "required": True}}
         assert "always_filter (carried)" in report
         section = item(report, "always_filter (NOT carried)")
-        assert 'orders.created_date: "last month"' in section
+        assert 'orders.created_date: "7 days"' in section
         assert "orders.status" not in section
 
     def test_two_looker_fields_for_one_omni_field(self, tmp_path):
@@ -312,7 +311,7 @@ class TestUntranslatableAlwaysFilter:
         assert "default_filters" not in topic
         assert "conditionally_filter (NOT carried)" in report
 
-    @pytest.mark.parametrize("expression", ["7 days", "last month", "", None, 7, "7 days ago", "7 day ago for 7 day"])
+    @pytest.mark.parametrize("expression", ["7 days", "next month", "last 2 months", "", None, 7, "7 days ago", "0 days ago for 0 days"])
     def test_translate_date_filter_expression_rejects(self, expression):
         condition, reason = translate_date_filter_expression(expression)
         assert condition is None and reason

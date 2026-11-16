@@ -291,7 +291,7 @@ class TestDimensionGroups:
         assert result.omni_field.sql is None
 
     @pytest.mark.parametrize('extra', [
-        {'datatype': 'epoch'}, {'datatype': 'yyyymmdd'}, {'convert_tz': 'no'}, {'sql_date': 'x'},
+        {'datatype': 'epoch'}, {'datatype': 'yyyymmdd'}, {'sql_date': 'x'},
     ])
     def test_temporal_semantics_not_converted(self, applier, extra):
         result = applier.convert_dimension_group('created', {'type': 'time', 'sql': '${TABLE}.created_at', **extra})

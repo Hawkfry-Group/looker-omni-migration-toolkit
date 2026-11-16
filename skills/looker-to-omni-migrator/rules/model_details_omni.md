@@ -157,6 +157,7 @@ dimensions:
 - **SQL is an expression**, never a `SELECT`.
 - **One primary key per view:** `primary_key: true`.
 - **Hidden:** `hidden: true`.
+- **No timezone conversion:** `convert_tz: false` on a date dimension keeps the database timezone (Looker `convert_tz: no`). The default is `true`; the migrator never writes `convert_tz: true`. See <https://docs.omni.co/modeling/dimensions/parameters/convert-tz>.
 
 ## 5. Dates
 
@@ -249,6 +250,8 @@ required_access_grants: [can_view_financials]
 ```
 
 - `joins` is a tree: a view nested under another is joined through it.
+- `fields` is a list of selectors: `all_views.*`, `view.*`, `tag:<value>`, `view:tag:<value>` and `view.field`, each excluded with a leading `-`. Omni evaluates them in that order of selector type, not in list order, so `[all_views.*, -users.*, users.id]` exposes only `id` from `users`. A query that uses an excluded field is rejected. The migrator writes Looker explore and join `fields:` restrictions here (for example `[all_views.*, -users.*, users.id, users.name, -order_items.cost, "-tag:table_key"]`). See <https://docs.omni.co/modeling/topics/parameters/fields>.
+- A date filter in `default_filters` can be a named period: `is: last month`.
 - Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`, `views`, `relationships`, `default_filters`, `extends`, `template`.
 - `views` holds topic-scoped view definitions, keyed by the view's name in the topic. The migrator uses it for three things: declaring a base view alias (`extends: [real_view]`), a `label` for a view in this topic, and dimensions and measures whose SQL references a join alias of this topic. Such a field fails model validation in a view file and validates here:
 

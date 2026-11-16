@@ -50,6 +50,9 @@ class OmniDimension(BaseModel):
     hidden: Optional[bool] = Field(None, description="True if hidden from UI")
     timeframes: Optional[List[str]] = Field(None, description="For date dimensions: [raw, date, week, month, ...]")
     datatype: Optional[Literal["timestamp", "date"]] = Field(None, description="Only for date dimensions with timeframes")
+    convert_tz: Optional[bool] = Field(
+        None, description="False keeps the database timezone with no conversion (Looker convert_tz: no); "
+                          "omitted otherwise (Omni's default is true)")
     ai_context: Optional[str] = Field(None, description="Detailed context for AI")
     synonyms: Optional[List[str]] = Field(None, description="Alternative terms")
     sample_values: Optional[List[Any]] = Field(None, description="Example values")

@@ -94,7 +94,10 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | `measure` `type: number`, `string`, `yesno`, `date` | calculated measure (SQL kept, no `aggregate_type`) |
 | `value_format_name: usd` / `decimal_2` | `format: usdcurrency_2` / `number_2` |
 | `${field}`, `${view.field}` | unchanged |
+| `dimension_group` with `convert_tz: no` | dimension with `convert_tz: false` |
 | `derived_table: { sql: ... }` | `{view}.query.view` with `sql:` |
+| `${view.SQL_TABLE_NAME}` in derived table SQL, pointing at a view with a literal `sql_table_name` | the table name, verbatim; blocked when the view is a derived table, is not found or has a templated table name |
+| SQL comment that holds Liquid (`-- {% if %} ...`) | removed from the SQL and listed in the report |
 | `derived_table: { explore_source: ... }` | `{view}.query.view` with `query:` |
 | `filter:`, `parameter:` | filter-only field under the view's `filters:` key (`allowed_value` becomes `suggestion_list`, `default_value` becomes `default_filter`) |
 | `{% condition f %} x {% endcondition %}` | `{{# view.f.filter }} x {{/ view.f.filter }}` |
@@ -111,7 +114,9 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | explore or join `view_label` | `label` for that view in the topic's `views:` block |
 | field whose SQL names a join alias (`${shop.store_name}`) | left out of the view file; written in the `views:` block of each topic that has the alias |
 | explore `access_filter`, `sql_always_where`, `sql_always_having` | topic `access_filters`, `always_where_sql`, `always_having_sql` |
-| explore `always_filter` (`N days ago for N days`, string values, a number) | topic `default_filters` entry with `required: true`; other expressions are reported |
+| explore `always_filter` (`N days ago for N days`, named periods such as `last month`, string values, a number) | topic `default_filters` entry with `required: true`; other expressions are reported |
+| explore `fields: [ALL_FIELDS*, -view.a]` | topic `fields: [all_views.*, -view.a, "-tag:table_key"]` |
+| join `fields: [view.x]`, `fields: []`, `fields: [-view.x]` | `-view.*, view.x`; `-view.*`; `-view.x` in the topic `fields:` (sets expanded) |
 | explore `extends` | topic `extends`, with the merged joins and settings written into the topic |
 | explore `extension: required` | topic `template: true` |
 | `required_access_grants` | copied; grant definitions are MANUAL ACTION REQUIRED |
@@ -131,7 +136,8 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - LookML refinements are reported, not applied.
 - Each file is written atomically; a whole run is not.
 - Relationships are written topic-scoped. With `--relationships-file` they are model-wide in Omni, so separate `.relationships` files can conflict.
-- `always_filter` is translated for a small set of expressions only; named periods such as `last month`, and `N days`, are reported. `conditionally_filter` is reported only.
+- `always_filter` is translated for a small set of expressions only; `N days` and other period expressions are reported. Named periods other than `last month` are written and flagged for verification. `conditionally_filter` is reported only.
+- Field restrictions (`fields:`) are carried as topic selectors. Looker hides a restricted field; Omni rejects queries that use it. A list that cannot be resolved with confidence is reported, not carried.
 - An extending topic needs its parent topic in the Omni model: migrate the parent explores too.
 - An extending view needs its parent views in the Omni model: migrate every view of the chain. Inherited fields are not copied, so their visibility follows the parent view's CSV scope.
 - Explore mode does not rewrite join SQL for fields renamed by a merge.

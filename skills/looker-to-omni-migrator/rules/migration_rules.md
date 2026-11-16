@@ -83,6 +83,7 @@ table_name: users
 
 - `sql_table_name: schema.table` gives `schema` and `table_name`. A three-part name (`project.dataset.table`) also gives `catalog`. Quoted names are handled.
 - `sql_table_name` containing Liquid or `${...SQL_TABLE_NAME}`, more than three parts, or anything unparseable: the view fails (exit 1) and nothing is written.
+- In derived table SQL, `${view.SQL_TABLE_NAME}` is replaced by the referenced view's table name, verbatim, when that view is found under `--looker-repo` and has a literal `sql_table_name` (its own, or inherited through `extends:`). The report lists each substitution under "Table References Substituted". The reference stays blocked (the view fails, MANUAL ACTION REQUIRED, with the case named) when the referenced view is itself a derived table, is not found or is defined more than once, has a templated table name (Liquid, `${...}` or a `@{constant}`), has no `sql_table_name`, or has refinements. Any other `${...}` reference in derived table SQL still stops the view.
 - If the schema cannot be read, `--default-schema` (default `analytics`) is used.
 - `folder` is `<schema>/<curated_folder>` (default folder `curated`), using the resolved schema.
 
@@ -199,10 +200,11 @@ Scope: `derived_table: { sql: ... }` and the `sql:` of dimensions, dimension gro
 | `{{ _user_attributes['x'] }}` | `{{ omni_attributes.x }}` |
 | `{% if %}`, `{% elsif %}`, `{% else %}`, `{% assign %}`, loops, Liquid filters (`\| upcase`), any other `{{ ... }}` | not converted (MANUAL); the report names the construct |
 
-- **All or nothing per SQL block.** If any construct is outside the table, malformed, nested (Liquid inside a `{% condition %}`), inside a SQL string or comment where it cannot be translated, or names a field that cannot be resolved, the block is not converted: the field is not written, or the derived view stops (exit 1, nothing written). The reason names every construct that blocked it.
+- **All or nothing per SQL block.** If any construct is outside the table, malformed, nested (Liquid inside a `{% condition %}`), inside a SQL string or quoted identifier where it cannot be translated, or names a field that cannot be resolved, the block is not converted: the field is not written, or the derived view stops (exit 1, nothing written). The reason names every construct that blocked it.
 - **View name in the token.** An unqualified reference (`{% parameter p %}`) names the view being converted, also when the field is inherited. `view.field` is used when `view` is a view under `--looker-repo`. A join alias or explore alias is replaced by the view it stands for when it stands for exactly one view across all explores; otherwise the block is not converted.
 - **Targets.** `{% condition %}` and date bounds accept a filter-only field, a dimension, or the `date`, `time` or `raw` timeframe of a dimension group (named by the group in Omni). `{% parameter %}` and `_parameter_value` need a parameter. A dimension or measure named in a token is a dependency like `${field}`: if it is not migrated, the field that names it is not written (a derived view stops).
 - **Quotes.** Omni renders a `string` value as a quoted literal, a `number` bare and a `column` as a quoted identifier. Quotes that directly wrap a parameter tag (`'{% parameter p %}'`) are dropped. A tag embedded in a longer quoted string or identifier (`'%{% parameter p %}%'`, `"prefix_{% parameter p %}"`) is never converted. A quoted `number` or `yesno` parameter is not converted. User attributes are interpolated raw by both tools: quotes around them are kept.
+- **SQL comments.** A SQL comment (`-- ...` or `/* ... */`) that holds Liquid is removed from the output SQL, because a comment has no effect on the query. The report lists it under "Liquid translated" as "SQL comment containing Liquid removed". Looker renders Liquid before the SQL is read, so a comment is removed only when every Liquid block opened in it (`{% if %}`, `{% for %}`, `{% condition %}` and so on) is closed in it, or in the comments that directly follow it with only whitespace between (a commented-out block of several lines). A block tag that reaches code outside the comment blocks the SQL block, and so does an optimizer hint (`/*+ ... */`) that holds Liquid. Comments without Liquid are kept. Liquid inside a quoted string or quoted identifier still blocks.
 - **`type: unquoted`.** A use is an identifier when the tag is wrapped in double quotes or backticks, qualified with a dot (`${TABLE}.{% parameter p %}`, `{% parameter p %}.events`) or the table after `FROM` or `JOIN`. A use wrapped in single quotes is a string. A bare use anywhere else (for example `DATE_TRUNC({% parameter p %}, x)`) could be a keyword or a number and is not converted. A parameter used both as an identifier and as a string blocks every SQL block that reads it. With `type: column`, each allowed value must hold a full column or `schema.table` name.
 - **Inherited templated fields.** A Mustache token names one view. An inherited field whose Liquid names "this view" is therefore written into the extending view too, converted there, tagged `resolved_from_extends`. It is visible when the CSV lists it under the view or under the parent it comes from.
 - **Output.** SQL that holds Mustache is written as a block scalar and is not reformatted. Before a view is written, every SQL block converted in the run is checked again: a leftover `{%` or Looker-style `{{ ... }}` stops the write.
@@ -217,7 +219,8 @@ Omni has no `dimension_groups:` section. A `type: time` dimension_group becomes 
 
 - `sql:` is the underlying column.
 - No `timeframes:` and no `datatype:` are written; Omni generates timeframes for date and timestamp columns. The Looker timeframes are noted in the report.
-- Not converted (MANUAL): `type: duration`, `datatype` other than `timestamp`/`datetime`/`date` (for example `epoch`, `yyyymmdd`), `convert_tz: no`, `sql_date`, `sql_start`/`sql_end`.
+- `convert_tz: no` becomes `convert_tz: false` on the Omni dimension: the field keeps the database timezone with no conversion. `convert_tz: yes`, or none, writes nothing (Omni's default is `true`). The same applies to a dimension of type `date`, `date_time` or `time`; on any other dimension type the parameter is ignored. It is listed in the report with the field's other changes, and is not a manual item. `datatype: date` needs no Omni key.
+- Not converted (MANUAL): `type: duration`, `datatype` other than `timestamp`/`datetime`/`date` (for example `epoch`, `yyyymmdd`), `sql_date`, `sql_start`/`sql_end`.
 - References to timeframe fields. A reference to the `date` or `raw` timeframe of a dimension group is rewritten to Omni's timeframe form: `${created_date}` becomes `${created[date]}` and `${view.created_raw}` becomes `${view.created[raw]}`, for the view's own and inherited groups, in field `sql:` and in join `sql_on`. These two timeframes have the same SQL type in both tools. Every rewrite is listed in the report under "Timeframe references rewritten".
 - A reference to any other timeframe (`week`, `month`, `quarter`, `year`, `time`, `day_of_week`, `week_of_year` and so on) is not rewritten: Looker renders these as formatted strings or integers and Omni renders dates, so a comparison in the surrounding SQL could silently change meaning. The field (or join) is not written and the report names the timeframe.
 - A name counts as a timeframe reference only when a `type: time` dimension group of that name exists in the view's chain and offers that timeframe (a group with no `timeframes:` list has Looker's defaults). A real dimension called `signup_date` is left alone.
@@ -357,13 +360,35 @@ The report's **Merge/Enrich Summary** lists counts for: Updated (in scope), Merg
 
 ## Explores
 
-- Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]`, `base_view` (the name the explore's own fields go by, see Aliases below), and `joins` nested by which view each join's `sql_on` references.
+- Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]` (plus the explore's field restrictions, see below), `base_view` (the name the explore's own fields go by, see Aliases below), and `joins` nested by which view each join's `sql_on` references.
 - The join definitions are written inside the topic file under a top-level `relationships:` key (topic-scoped relationships), so they apply to that topic only. `joins:` is still written and keeps its nesting. With `--relationships-file` they go to `{explore}.relationships` instead (a plain YAML list, written only when at least one join converts), and a join between the same two views that differs from another `.relationships` file in the output directory is reported as a conflict. Both forms write the same keys.
 - Join types: `left_outer` (or none) → `always_left`; `inner` → `inner`; `full_outer` → `full_outer`; `cross` → `cross`. Missing `relationship` defaults to `many_to_one`. Other join types or relationships: join not migrated.
 - Aliased joins (`from:`) use `join_to_view` plus `join_to_view_as`; joins from an aliased view use `join_from_view_as`. `on_sql` keeps the Looker aliases.
 - Not migrated, reported with the original SQL: joins with Liquid, `foreign_key`, raw `sql`, references outside the explore, more than one parent, cycles, or that depend on a skipped join.
-- Carried into the topic: `access_filter` → `access_filters`, `sql_always_where` → `always_where_sql`, `sql_always_having` → `always_having_sql`, `required_access_grants`, `hidden`, `group_label`.
-- Reported only: `conditionally_filter` (Omni has no equivalent), `fields:` restrictions, `always_join`, `required_joins`, join-level `required_access_grants`.
+- Carried into the topic: `access_filter` → `access_filters`, `sql_always_where` → `always_where_sql`, `sql_always_having` → `always_having_sql`, `required_access_grants`, `hidden`, `group_label`, and explore and join `fields:` restrictions (see Field restrictions).
+- Reported only: `conditionally_filter` (Omni has no equivalent), `always_join`, `required_joins`, join-level `required_access_grants`.
+
+### Field restrictions (`fields:`)
+
+Looker restricts fields on the explore and on each join. Both are written as selectors in the topic's one `fields:` list. Omni evaluates selectors by type, not list order: `all_views.*`, then `view.*`, then tags, then `view.field`; a leading `-` excludes.
+
+| Looker | Omni topic `fields:` |
+|---|---|
+| explore `fields: [ALL_FIELDS*, -view.a, -view.b]` | `all_views.*, -view.a, -view.b` |
+| explore `fields: [view.a, other.b]` (no `ALL_FIELDS*`) | `-all_views.*, view.a, other.b` |
+| join `fields: [view.x, view.y]` | `-view.*, view.x, view.y` |
+| join `fields: []` | `-view.*` |
+| join `fields: [-view.x]` (exclusions only) | `-view.x` |
+
+- The migrator's default exclusion `-tag:table_key` is always added at the end. A field listed by name stays in the topic even when it carries that tag, because `view.field` is evaluated after tags.
+- Names are the names the views have in the topic (the alias for an aliased join or base view).
+- A set (`view.set_name*`) is expanded to its member fields from the view's `set:` definitions, nested sets and sets inherited through `extends:` included.
+- A dimension group timeframe (`view.created_date`) maps to the Omni dimension (`view.created`), which offers every timeframe. An exclusion is carried only when it excludes every timeframe in the group's `timeframes:` list.
+- The explore list and the join lists are combined: a field the explore excludes is removed from a join's list, and with an explore list of fields only, a field must also pass its join's list.
+- Dropped from the list and noted in the report under "Field restrictions": a field the topic will not contain (not converted), a name the view does not define, and an entry for a join that was not migrated. A filter-only field or parameter is left out and listed for review.
+- A list is carried whole or not at all. Not carried, reported as MANUAL ACTION REQUIRED ("Explore field restriction (NOT carried)", "Join field restriction on X (NOT carried)") with the reason: a set that is not defined, that holds `ALL_FIELDS*`, an exclusion or a field of another view; an exclusion of only some timeframes of a dimension group; an explore list with exclusions and no `ALL_FIELDS*`; an entry that is not view-qualified on the explore, or that names another view on a join; a view whose fields are not known (not a single view under `--looker-repo`, or its `extends:` chain does not resolve).
+- With explore `extends`, the child's explore-level `fields:` replaces the parent's, and a redeclared join's `fields:` (including `fields: []`) replaces the inherited join's.
+- The difference to Looker: Looker hides the restricted fields, Omni rejects queries that use them. Carried lists are also listed as "Field restrictions (carried)" to be verified.
 
 ### `always_filter`
 
@@ -383,14 +408,16 @@ Only these expressions are translated:
 
 | Looker expression | Omni |
 |---|---|
-| `N days ago for N days` (also weeks, months; same N and unit on both sides, N of 2 or more) on a date field | `time_for_duration: [N complete days ago, N days]` |
+| `N days ago for N days` (also weeks, months; same N and unit on both sides, N of 1 or more) on a date field | `time_for_duration: [N complete days ago, N days]` |
+| a named period on a date field: `last month`, `this month`, `last week`, `this week`, `last year`, `this year`, `last quarter`, `this quarter`, `today`, `yesterday` | `is: last month` (the period, lower case) |
 | a plain value on a string field, e.g. `global` | `is: global` |
 | a comma list of values on a string field, `a,b` | `is: [a, b]` |
 | one number on a number field | `is: 5` |
 
 - `complete` matters: Looker's "7 days ago for 7 days" is the last 7 complete days, without today.
 - The filter key is the Omni field. A timeframe field of a dimension group (`created_date`, `created_time`, `created_raw`) maps to the group's Omni name (`created`); a dimension of type `date`, `date_time` or `time` keeps its name. A field on an aliased join keeps the alias (`buyer.country`), and so does a field on an aliased base view (`sales.sold`).
-- Not written, reported as MANUAL ACTION REQUIRED with the Looker expression and the reason: an empty value, `N days` (it includes today so far), named periods (`last month`, `this month`, `today`, `yesterday`), negations, wildcards, comparisons, `NULL`, yesno fields, measures, other timeframes (`created_week`), a field that is not view-qualified or not found in the view, and a field on a view that is not in the topic.
+- Named periods: `is: last month` was tested on a live Omni instance and gives the previous calendar month. The other named periods use the same Omni mechanism and were not tested one by one, so each is written and listed under MANUAL ACTION REQUIRED as "Named date periods (verify)".
+- Not written, reported as MANUAL ACTION REQUIRED with the Looker expression and the reason: an empty value, `N days` (it includes today so far), any other period expression (`next month`, `last 2 months`, `tomorrow`), negations, wildcards, comparisons, `NULL`, yesno fields, measures, other timeframes (`created_week`), a field that is not view-qualified or not found in the view, and a field on a view that is not in the topic.
 - Translated filters are also listed under MANUAL ACTION REQUIRED as "carried", to be verified in Omni.
 
 ### Aliases (kept, scoped to the topic)
