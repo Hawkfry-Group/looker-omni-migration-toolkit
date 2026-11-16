@@ -105,6 +105,7 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 
 - **Merge into existing Omni views.** Pass `--omni-source-repo PATH` to enrich schema-synced Omni views. A Looker field that reads a differently named column can merge under that existing column's name; the rename is recorded in the report.
 - **Explore analysis.** Pass `--explore-analysis` with `--view` to list the explores that use the view, their restrictions and a topic suggestion. Off by default.
+- **Primary key finder.** A separate script, `scripts/find_primary_keys.py`, for views that end up with no primary key. It tests candidate columns on a sample of the data through the Omni CLI, reports what it finds, and writes the key only with `--apply`. See [docs/PRIMARY_KEYS.md](docs/PRIMARY_KEYS.md).
 - **Configuration.** Pass `--config` with a copy of [config/migration_config.example.yaml](config/migration_config.example.yaml) to set `default_schema`, `curated_folder` and `canonical_mappings` (label renames such as `sku: product`; empty by default).
 
 ## Known limitations
@@ -127,6 +128,7 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - [docs/WORKFLOW.md](docs/WORKFLOW.md): views, then explores, then topics
 - [docs/QUERY_VIEWS.md](docs/QUERY_VIEWS.md): derived tables to Omni query views
 - [docs/ACCESS_GRANTS.md](docs/ACCESS_GRANTS.md): what happens to access controls
+- [docs/PRIMARY_KEYS.md](docs/PRIMARY_KEYS.md): optional primary key finder for views that have no key
 - [rules/](rules/): conversion rules and Omni syntax reference
 - [reference/](reference/): CLI flags, CSV format, output files, conversion patterns, troubleshooting
 - [examples/](examples/): sample LookML, CSV, expected output, and a hand-written example Omni model
@@ -138,7 +140,9 @@ looker-to-omni-migrator/
 ├── SKILL.md
 ├── README.md
 ├── requirements.txt
-├── scripts/migrate.py     # CLI entry point
+├── scripts/
+│   ├── migrate.py             # converter CLI entry point
+│   └── find_primary_keys.py   # optional primary key finder
 ├── lib/                   # parser, converter, generators, Pydantic models
 ├── config/                # example configuration
 ├── rules/                 # conversion rules read by the CLI and by Claude
