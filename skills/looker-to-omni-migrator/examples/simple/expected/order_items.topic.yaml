@@ -1,13 +1,21 @@
 # Reference output for:
 #   python scripts/migrate.py --explore order_items --looker-repo examples/simple/thelook
 # Source: examples/simple/thelook/explores/order_items.explore.lkml
-# Joins are written to order_items.relationships next to this file.
+# The join definitions are topic-scoped: they sit under `relationships:` in
+# this file. `joins:` still lists the joined views and their nesting.
 # The explore's access_filter is carried into access_filters below. The user
 # attribute (allowed_country) must exist in Omni before this topic is deployed.
 base_view: order_items
 label: Order Items
 description: Sales by item, with the customer who placed each order
 fields: [all_views.*, "-tag:table_key"]
+relationships:
+- join_from_view: order_items
+  join_to_view: users
+  join_type: always_left
+  on_sql: ${order_items.user_id} = ${users.id}
+  relationship_type: many_to_one
+  reversible: false
 joins:
   users: {}
 ai_context: |-

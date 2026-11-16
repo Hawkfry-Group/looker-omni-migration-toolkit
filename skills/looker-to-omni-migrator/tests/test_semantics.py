@@ -129,13 +129,18 @@ def explore_repo(tmp_path):
 
 
 class TestExploreSemantics:
-    def migrate(self, tmp_path, repo, name="orders"):
+    def migrate(self, tmp_path, repo, name="orders", relationships_file=False):
+        """rels: the topic's own `relationships:` (default) or the separate file (relationships_file)"""
         orch = MigrationOrchestrator(skill_path=SKILL_ROOT, looker_repo=repo, omni_repo=tmp_path / "out" / "topics")
-        result = orch.migrate_explore(name)
+        result = orch.migrate_explore(name, relationships_file=relationships_file)
         assert result.success, result.error_message
         topic = load_yaml(tmp_path / "out" / "topics" / f"{name}.topic.yaml")
         rel_path = tmp_path / "out" / "topics" / f"{name}.relationships"
-        rels = load_yaml(rel_path) if rel_path.exists() else []
+        if relationships_file:
+            rels = load_yaml(rel_path) if rel_path.exists() else []
+        else:
+            assert not rel_path.exists()
+            rels = topic.get("relationships", [])
         report = (tmp_path / "out" / "reports" / f"{name}_explore.md").read_text()
         return result, topic, rels, report
 
@@ -193,8 +198,12 @@ class TestExploreSemantics:
 
     def test_aliased_base_view(self, tmp_path, explore_repo):
         _, topic, rels, report = self.migrate(tmp_path, explore_repo, "customers")
-        assert topic["base_view"] == "users"
-        assert "Aliased base view" in report
+        # J3a: the alias is kept as base_view and declared in the topic's `views:` block
+        assert topic["base_view"] == "customers"
+        assert topic["views"] == {"customers": {"extends": ["users"]}}
+        assert rels[0]["join_from_view"] == "customers"
+        assert "Aliased base view" not in report
+        assert "| `customers` | `users` |" in report.split("## Alias map")[1]
 
     def test_stale_relationships_file_removed(self, tmp_path):
         repo = tmp_path / "repo"
@@ -203,10 +212,11 @@ class TestExploreSemantics:
             view: b { dimension: id {} }
             explore: a { join: b { sql_on: ${a.id} = ${b.id} ;; } }
         """)
-        _, _, rels, _ = self.migrate(tmp_path, repo, "a")
+        _, _, rels, _ = self.migrate(tmp_path, repo, "a", relationships_file=True)
         assert len(rels) == 1
+        assert (tmp_path / "out" / "topics" / "a.relationships").exists()
         model.write_text("view: a { dimension: id {} }\nexplore: a {}\n")
-        self.migrate(tmp_path, repo, "a")
+        self.migrate(tmp_path, repo, "a", relationships_file=True)
         assert not (tmp_path / "out" / "topics" / "a.relationships").exists()
 
     def test_conflicting_relationship_in_other_explore_reported(self, tmp_path):
@@ -215,10 +225,11 @@ class TestExploreSemantics:
             view: a { dimension: id {} }
             view: b { dimension: id {} }
             explore: a { join: b { sql_on: ${a.id} = ${b.id} ;; } }
-            explore: a2 { from: a join: b { sql_on: ${a2.id} = ${b.other_id} ;; } }
+            explore: a2 { view_name: a join: b { sql_on: ${a.id} = ${b.other_id} ;; } }
         """)
-        self.migrate(tmp_path, repo, "a")
-        result, _, _, report = self.migrate(tmp_path, repo, "a2")
+        # Only with --relationships-file: topic-scoped relationships cannot conflict across files
+        self.migrate(tmp_path, repo, "a", relationships_file=True)
+        result, _, _, report = self.migrate(tmp_path, repo, "a2", relationships_file=True)
         assert "Conflicting relationship" in report
         assert any("Conflicting relationship" in i for i in result.issues)
 
@@ -504,12 +515,12 @@ class TestSources:
         """, [("0", "top_status", "status", "dimension")], self.NDT_MODEL)
         assert result.success, result.error_message
         query = load_yaml(result.view_file_path)["query"]
-        # explore sales { from: order_items }: every sales.* ref is rewritten to the base view
-        assert query == {"fields": {"order_items.status": "status"}, "base_view": "order_items", "topic": "sales",
-                         "filters": {"order_items.amount": {"greater_than": 10}},
-                         "sorts": [{"field": "order_items.status", "desc": True}], "limit": 10}
-        assert "sales." not in str(query["fields"]) + str(query["filters"]) + str(query["sorts"])
-        assert any("rewritten from sales.*" in i for i in result.issues)
+        # explore sales { from: order_items }: topic `sales` declares the alias `sales` as its
+        # base view (J3a), so the query keeps the Looker names
+        assert query == {"fields": {"sales.status": "status"}, "base_view": "sales", "topic": "sales",
+                         "filters": {"sales.amount": {"greater_than": 10}},
+                         "sorts": [{"field": "sales.status", "desc": True}], "limit": 10}
+        assert any("which topic sales declares" in i for i in result.issues)
 
     @pytest.mark.parametrize("block,reason", [
         ("bind_filters: { from_field: sales.status to_field: sales.status }", "bind_filters"),
@@ -708,7 +719,11 @@ class TestRound3:
         result = run_cli("--parse-access-grants", "--looker-repo", tmp_path, "--dry-run", cwd=tmp_path)
         assert "creating from scratch" not in result.stdout
 
-    def test_explore_files_rendered_before_writing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("renderer,relationships_file", [
+        ("render_topic_yaml", False),
+        ("render_relationships_yaml", True),
+    ])
+    def test_explore_files_rendered_before_writing(self, tmp_path, monkeypatch, renderer, relationships_file):
         write(tmp_path / "repo" / "m.model.lkml", """
             view: a { dimension: id {} }
             view: b { dimension: id {} }
@@ -718,8 +733,8 @@ class TestRound3:
 
         def boom(*args, **kwargs):
             raise RuntimeError("render failed")
-        monkeypatch.setattr(orch.file_generator, "render_relationships_yaml", boom)
-        result = orch.migrate_explore("a")
+        monkeypatch.setattr(orch.file_generator, renderer, boom)
+        result = orch.migrate_explore("a", relationships_file=relationships_file)
         assert not result.success
         assert not (tmp_path / "out").exists()
 

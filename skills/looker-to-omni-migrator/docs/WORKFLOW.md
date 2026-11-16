@@ -31,6 +31,10 @@ for view in users products inventory_items; do
 done
 ```
 
+### Views that extend other views
+
+`--view child` resolves `extends:` across every `.lkml` file under `--looker-repo` and writes `extends: [parent]` on the Omni view. Inherited fields stay in the parent views, so migrate each view of the chain (the report lists them), templates included: a view with `extension: required` becomes a view with `template: true` and no table. List a field in the CSV under the view that defines it; a row for an inherited field under the child writes nothing. A view with no fields of its own needs no CSV rows.
+
 ### Phases
 
 Run the same view again for a later phase and it merges into the existing output. Fields migrated in earlier phases stay visible; the new phase's fields become visible and are tagged with their phase.
@@ -63,13 +67,13 @@ Once the views an explore needs are migrated:
 python skills/looker-to-omni-migrator/scripts/migrate.py --explore order_items --looker-repo ./looker
 ```
 
-This writes `order_items.topic.yaml` and `order_items.relationships` to `migration/staging/topics/`, and `order_items_explore.md` to `migration/staging/reports/`. From the test fixture explore (five joins plus an access filter, `sql_always_where`, `always_filter` and an access grant):
+This writes `order_items.topic.yaml` (the topic, with its join definitions under `relationships:`) to `migration/staging/topics/`, and `order_items_explore.md` to `migration/staging/reports/`. From the test fixture explore (five joins plus an access filter, `sql_always_where`, `always_filter` and an access grant):
 
 ```
 ⚠️  COMPLETED WITH 4 ITEM(S) NEEDING MANUAL ACTION: order_items
    - Access filters (carried): Create these user attributes in Omni before deploying: `allowed_country`
    - sql_always_where (carried): Verify `${order_items.status} != 'Cancelled'` returns the same rows in Omni.
-   - always_filter (NOT carried): Looker always_filter: `order_items.created_date: 90 days`. Recreate with Omni `default_filters` or `always_where_filters` as appropriate.
+   - always_filter (NOT carried): Looker always_filter not written: `order_items.created_date: "90 days"`. Recreate each one as an Omni `default_filters` entry with `required: true` (it needs a value).
    - Access grants (carried): Define these grants in the Omni model file (`access_grants:`):
 ```
 
@@ -79,6 +83,14 @@ base_view: order_items
 label: Orders
 description: Order line items with shopper, product and inventory context
 fields: [all_views.*, "-tag:table_key"]
+relationships:
+- join_from_view: order_items
+  join_to_view: orders
+  join_type: always_left
+  on_sql: ${order_items.order_id} = ${orders.order_id}
+  relationship_type: many_to_one
+  reversible: false
+# ... one entry per migrated join
 joins:
   orders: {}
   users: {}
@@ -100,14 +112,47 @@ What happens to explore features:
 | `type: inner`, `full_outer`, `cross` | `inner`, `full_outer`, `cross` |
 | other join types or relationships | join not migrated; reported |
 | `sql_on` | `on_sql`, with `${view.field}` references kept; joins nested by which view they reference |
-| `from:` alias | `join_to_view` plus `join_to_view_as` |
+| join `from:` alias | `join_to_view` plus `join_to_view_as`, scoped to the topic |
+| explore `from:` / `view_name:` that rename the base view | `base_view: <alias>`, declared in the topic's `views:` block with `extends: [real_view]` |
+| `view_label` | `label` in the topic's `views:` block |
+| fields of the topic's views that reference a join alias | written in the topic's `views:` block (view mode leaves them out of the view file) |
 | Liquid, `foreign_key`, raw `sql` joins, or joins that depend on a skipped join | not migrated; reported with the original SQL |
 | `access_filter` | topic `access_filters` (create the user attributes in Omni) |
 | `sql_always_where`, `sql_always_having` | `always_where_sql`, `always_having_sql` (verify) |
 | `required_access_grants`, `hidden`, `group_label` | carried (define the grants in Omni) |
-| `always_filter`, `conditionally_filter`, `fields:`, `always_join`, `required_joins`, join-level grants, `extends` | reported only |
+| `always_filter` with `N days ago for N days` (also weeks, months), a string value or list, or one number | topic `default_filters` entry with `required: true` (verify) |
+| `always_filter` with a named period on a date field (`last month`, `this week`, `today`, ...) | `is: last month` with `required: true` (periods other than `last month`: verify) |
+| `always_filter` with any other expression (`90 days`, `next month`) or no value | not written; reported with the Looker expression |
+| explore and join `fields:` | topic `fields:` selectors (`all_views.*, -view.a`; `-view.*, view.x`); reported when a list cannot be resolved |
+| `extends` | topic `extends` plus the merged joins and settings of the parent chain; reported and not merged if a parent cannot be found |
+| `extension: required` | topic `template: true` |
+| `conditionally_filter`, `always_join`, `required_joins`, join-level grants | reported only |
 
-The relationships file is written only when at least one join converts. A stale `{explore}.relationships` from an earlier run is removed when a run produces no joins. Omni relationships apply model-wide, so check for conflicting joins between the same two views across files; the CLI warns when it finds one in the same output directory.
+The join definitions are topic-scoped: they live in the topic file and apply to that topic only, so two explores can join the same views differently. To keep one model-wide relationships file instead, add `--relationships-file`: the joins are then written to `{explore}.relationships` (only when at least one join converts; a stale file from an earlier run is removed when a run produces no joins) and the CLI warns when another `.relationships` file in the output directory joins the same two views differently.
+
+### Aliases and cross-view fields
+
+Aliases are kept as in Looker and declared inside the topic, so the same alias can mean different views in different topics. The explore report lists them in an "Alias map" table and reports only the alias references that do not resolve.
+
+A field such as `sql: ${shop.store_name}`, where `shop` is a join alias, cannot live in a view file. View mode lists it under "Topic-scoped fields" in the view report, and explore mode writes it in the `views:` block of each topic that has the alias. These fields have no scope CSV row in explore mode: they are written visible unless Looker hides them. Pass `--phase N` with `--explore` to tag them with the migration phase.
+
+### Topic names across models
+
+Topic names must be unique in an Omni model, and topic files are not namespaced by folder. When two Looker models have an explore of the same name, add a prefix:
+
+```bash
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore orders --looker-repo ./looker --topic-prefix model
+```
+
+This writes `{model}__orders.topic.yaml`, using the Looker model file that holds the explore. Pass a name instead of `model` to choose the prefix yourself.
+
+### Explores that extend other explores
+
+`--explore child` resolves `extends:` across every `.lkml` file under `--looker-repo` and writes `extends: [parent]` together with the full merged result, because a child topic's `joins:` replaces the parent's in Omni. Migrate the parent explores as well, so the topics named in `extends:` exist. A parent with `extension: required` becomes a `template: true` topic. A parent that is extended but can also be used on its own stays a normal topic; pass `--template` when you know it is only a base:
+
+```bash
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore orders_base --looker-repo ./looker --template
+```
 
 Each explore becomes one topic. To split a large explore, copy the generated topic and trim the joins in each copy. Ask Claude to help: *"Split the order_items topic into a sales topic and an inventory topic."*
 
@@ -130,8 +175,7 @@ migration/staging/
 │   ├── order_items.view.yaml
 │   └── user_order_facts.query.view
 ├── topics/
-│   ├── order_items.topic.yaml
-│   └── order_items.relationships
+│   └── order_items.topic.yaml
 └── reports/
     ├── users.migration.md
     ├── order_items.migration.md
@@ -153,7 +197,8 @@ Review the files, copy them into your Omni model on a branch, validate in Omni, 
 
 ## Tips
 
-- If explore A extends explore B, migrate B first; `extends` is reported, not applied.
+- If view A extends view B, migrate both: A's file only refers to B in `extends:`.
+- If explore A extends explore B, migrate both: A's topic carries the merged joins and settings and refers to B's topic in `extends:`.
 - Start with small explores to prove the approach.
 - Use `--unverified` for drafts; re-run without it once reviewed.
 - Keep the CSV under version control. It is your record of what moved in each phase.

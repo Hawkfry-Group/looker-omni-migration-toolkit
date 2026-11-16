@@ -15,7 +15,7 @@ phase,view,field,type,omni_view,omni_field,owner,status,notes
 | `phase` | yes | `P0`, `P1`, … or `0`, `1`, … Both forms match `--phase 0`. |
 | `view` | yes | Looker view name, exactly as in `view: name`. |
 | `field` | yes | Looker field name. For a dimension group, the group name (`created`, not `created_date`). |
-| `type` | yes | `dimension`, `dimension_group`, `measure` or `parameter`. A legacy `field_type` column is also accepted. |
+| `type` | yes | `dimension`, `dimension_group`, `measure` or `filter` (a Looker `filter:` or `parameter:`; `parameter` is accepted too). A legacy `field_type` column is also accepted. |
 | `owner` | yes | Person or team. Exact, case-sensitive match with `--owner`. |
 | `omni_view`, `omni_field` | no | Tracking only. The migrator does not use them for naming. |
 | `status`, `notes` | no | For your team. Ignored by the migrator. |
@@ -58,9 +58,10 @@ Error: No CSV rows found for owner=Team A, phase=0, view=users
 | In scope | Converted and visible, tagged `mig_phase_N` + `verified` (or `unverified`) |
 | Not in scope, but an in-scope field references it (`${field}`, same view, any depth) | Auto-included: converted and visible, also tagged `auto_dependency`, listed in the console and report |
 | Not in scope, not referenced | Converted with its SQL but `hidden: true`, tagged only `in_omni_in_looker_not_csv`, listed under Not Converted |
-| Cannot be converted (unsupported type, Liquid, untranslatable filter, …) or depends on such a field | Not written, whether in scope or not; reported as MANUAL ACTION REQUIRED |
+| Cannot be converted (unsupported type, Liquid with no exact Omni equivalent, untranslatable filter, …) or depends on such a field | Not written, whether in scope or not; reported as MANUAL ACTION REQUIRED |
 | In the CSV but not in the LookML view | Reported: `CSV field 'x' (dimension) not found in Looker view v` |
-| `type: parameter` | Not converted; reported |
+| `type: filter` (a Looker `filter:` or `parameter:`; `parameter` is accepted too) | Written visible as a filter-only field under the view's `filters:` key |
+| A `filter:` or `parameter:` not in the CSV | Written; visible when a Liquid tag in the repository's SQL names it, `hidden: true` otherwise |
 
 A Looker `hidden: yes` is kept, even on in-scope and auto-included fields.
 
@@ -86,7 +87,8 @@ python scripts/migrate.py --view users --phase 1 --owner "Team A" \
 
 | Symptom | Cause |
 |---------|-------|
-| `No CSV rows found` | Owner differs in case or spacing; phase does not match; view name differs from the LookML |
+| `No CSV rows found` | Owner differs in case or spacing; phase does not match; view name differs from the LookML. Views with no fields of their own, and template views, convert without rows |
+| A row for an inherited field is reported | The field is defined in a parent view (`extends:`). List it under that parent view |
 | A field is hidden | It is not in scope for this phase and owner |
 | A field you did not list is visible | An in-scope field references it; see `auto_dependency` in the report |
 | A field you listed is missing | It could not be converted; see Notes / Risks in the report |

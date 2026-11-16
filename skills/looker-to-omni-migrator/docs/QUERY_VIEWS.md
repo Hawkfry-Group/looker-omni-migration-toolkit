@@ -62,9 +62,61 @@ dimensions:
 
 Notes:
 
-- The SQL goes under `sql:` and is reformatted with `sqlparse`; Looker's `;;` is removed.
+- The SQL goes under `sql:` and is reformatted with `sqlparse`; Looker's `;;` is removed. SQL that holds Mustache is not reformatted.
 - The schema is read from the table names in the SQL where possible, otherwise `--default-schema`.
-- Liquid or `${...}` references (for example `${other_view.SQL_TABLE_NAME}`) in the SQL stop the conversion: MANUAL ACTION REQUIRED, exit 1, nothing is written for the view.
+- `${view.SQL_TABLE_NAME}` is replaced by the table name of the referenced view, verbatim, when that view is found under `--looker-repo` and has a literal `sql_table_name` (its own, or inherited through `extends:`). `FROM ${orders.SQL_TABLE_NAME}` becomes `FROM thelook_ecommerce.orders`, and the report lists the substitution under "Table References Substituted". The SQL does not follow the referenced view if its table changes later.
+- The reference is not substituted, and the conversion stops (MANUAL ACTION REQUIRED, exit 1, nothing written for the view), when the referenced view is itself a derived table, is not found or is defined more than once, has a templated table name (Liquid, `${...}` or a `@{constant}`), has no `sql_table_name`, or has refinements. The message says which case it was.
+- Any other `${...}` reference in the SQL stops the conversion the same way.
+- A SQL comment (`-- ...` or `/* ... */`) that holds Liquid is removed from the SQL and listed in the report under "Liquid translated" as "SQL comment containing Liquid removed". It is removed only when the Liquid blocks opened in it are closed in it, or in the comments directly after it: Looker renders Liquid before the SQL is read, so `-- {% if x %}` and a later `-- {% endif %}` around real SQL would make that SQL conditional, and that case still stops the conversion. Comments without Liquid are kept.
+
+### Templated SQL (Liquid)
+
+A derived table whose Liquid has an exact Omni equivalent converts to templated SQL. Input (`tests/fixtures/thelook/views/sales_by_period.view.lkml`, abridged):
+
+```lkml
+view: sales_by_period {
+  derived_table: {
+    sql:
+      SELECT order_items.user_id AS user_id, SUM(order_items.sale_price) AS revenue
+      FROM thelook_ecommerce.order_items AS order_items
+      WHERE {% condition order_date %} order_items.created_at {% endcondition %}
+        AND order_items.created_at < {% date_end order_date %}
+        AND order_items.sale_price >= {% parameter min_sale_price %}
+        AND order_items.region = '{{ _user_attributes['sales_region'] }}'
+      GROUP BY 1 ;;
+  }
+
+  filter: order_date { type: date }
+  parameter: min_sale_price { type: number default_value: "0" }
+}
+```
+
+Output (`sales_by_period.query.view`, abridged):
+
+```yaml
+sql: |-
+  SELECT order_items.user_id AS user_id, SUM(order_items.sale_price) AS revenue
+  FROM thelook_ecommerce.order_items AS order_items
+  WHERE {{# sales_by_period.order_date.filter }} order_items.created_at {{/ sales_by_period.order_date.filter }}
+    AND order_items.created_at < {{ filters.sales_by_period.order_date.range_end }}
+    AND order_items.sale_price >= {{ filters.sales_by_period.min_sale_price.value }}
+    AND order_items.region = '{{ omni_attributes.sales_region }}'
+  GROUP BY 1
+
+filters:
+  order_date:
+    type: timestamp
+
+  min_sale_price:
+    type: number
+    default_filter:
+      is: 0
+    filter_single_select_only: true
+```
+
+- The `filters:` block holds the view's parameters and filter-only fields. Ones the view inherits through `extends:` are written on the parent view, and the tokens still name this view.
+- The view converts only when every Liquid construct in the SQL has an exact equivalent (see [../rules/migration_rules.md](../rules/migration_rules.md), "Liquid in SQL"). One `{% if %}`, a tag embedded in a longer quoted string, or a reference that cannot be resolved stops the view, and the error names the construct.
+- The report lists each construct under "Liquid translated". Create the user attributes it names in Omni.
 
 ## Native derived tables
 
@@ -114,7 +166,7 @@ dimensions:
     format: usdcurrency_2
 ```
 
-- `base_view` is the explore's real base view; `topic` is the explore name. The topic must exist in Omni (migrate the explore too).
+- `base_view` is the name the explore's own fields go by, which is the topic's `base_view` (for `explore: sales { from: order_items }` it is the alias `sales`, which the topic declares); `topic` is the explore name. The topic must exist in Omni (migrate the explore too). A topic written with `--topic-prefix` has a different name: update `topic` by hand.
 - `sorts: [field: desc]` become `sorts: [{field, desc: true}]`; `limit` is kept.
 - Filters are translated with the same rules as measure filters (see [../rules/migration_rules.md](../rules/migration_rules.md)).
 - Only columns declared as dimensions or measures in the LookML view appear under `dimensions:`/`measures:`. If the LookML view selects columns it never declares, add them by hand.

@@ -69,6 +69,68 @@ dimensions:
 
 Raw SQL goes under `sql:`. A structured `query:` block is only for native Omni queries; see [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
 
+### 2.2.1 Filter-only fields and Mustache
+
+A filter-only field holds no column. It lives under the view's top-level `filters:` key and its value is read in SQL through Mustache. The migrator writes one for each Looker `filter:` and `parameter:`.
+
+```yaml
+sql: |-
+  SELECT user_id, SUM(sale_price) AS revenue
+  FROM thelook_ecommerce.order_items
+  WHERE {{# sales_by_period.order_date.filter }} created_at {{/ sales_by_period.order_date.filter }}
+    AND sale_price >= {{ filters.sales_by_period.min_sale_price.value }}
+  GROUP BY 1
+
+filters:
+  order_date:
+    type: timestamp
+  min_sale_price:
+    type: number
+    default_filter:
+      is: 0
+    filter_single_select_only: true
+```
+
+| Token | Renders |
+|-------|---------|
+| `{{# view.field.filter }} expr {{/ view.field.filter }}` | the filter applied to `expr` (TRUE when the filter is unset). No `filters.` prefix |
+| `{{ filters.view.field.value }}` | the value: a `string` as a quoted literal, a `number` bare, a `column` as a quoted identifier. Never add quotes around it |
+| `{{ filters.view.field.range_start }}`, `.range_end` | the bounds of a `timestamp` filter |
+| `{{ view.field.in_query }}`, `.is_selected`, `.is_filtered`, `{{ view.in_query }}` | TRUE or FALSE |
+| `{{ omni_attributes.name }}` | a user attribute, interpolated raw |
+
+- Filter-only field types: `string`, `number`, `timestamp`, `boolean`, `column`. There is no `date` type.
+- Keys the migrator writes: `type`, `label`, `description`, `group_label`, `hidden`, `suggestion_list` (items with `value` and an optional `label`), `suggest_from_field`, `default_filter`, `filter_single_select_only`.
+- The view name in a token is the Omni view that has the field. A view that extends another names itself.
+- Mustache has no equivalent of Liquid `{% if %}`: it cannot remove SQL text.
+
+### 2.3 Template views and `extends`
+
+```yaml
+# base_entity.view.yaml: a template has no schema and no table_name
+folder: analytics/curated
+label: Base Entity
+tags: [base, fact, mig_phase_0, verified]
+template: true
+
+dimensions:
+  id:
+    primary_key: true
+    tags: [id, mig_phase_0, verified]
+```
+
+```yaml
+# orders.view.yaml
+schema: shop
+table_name: orders
+extends: [base_entity, audit_fields]
+```
+
+- `template: true` marks a view that only exists to be extended. It has no `schema` and no source (`table_name`, `sql`, `query`).
+- `extends:` is a list. The extending view inherits the fields of the listed views and overrides them with its own.
+- When two views in `extends:` define the same field, Omni uses the FIRST one in the list. Looker uses the last. The migrator keeps the Looker order and writes any field the parents disagree on into the extending view, tagged `resolved_from_extends`.
+- A field of the extending view may reference an inherited field with `${field}`.
+
 ## 3. View-level metadata
 
 | Key | Content |
@@ -95,6 +157,7 @@ dimensions:
 - **SQL is an expression**, never a `SELECT`.
 - **One primary key per view:** `primary_key: true`.
 - **Hidden:** `hidden: true`.
+- **No timezone conversion:** `convert_tz: false` on a date dimension keeps the database timezone (Looker `convert_tz: no`). The default is `true`; the migrator never writes `convert_tz: true`. See <https://docs.omni.co/modeling/dimensions/parameters/convert-tz>.
 
 ## 5. Dates
 
@@ -108,7 +171,7 @@ dimensions:
     description: "When the order was placed."
 ```
 
-The migrator writes neither `timeframes:` nor `datatype:`. If you need to change the available timeframes by hand, check the Omni docs for the current syntax first. Looker timeframe fields such as `${created_date}` have no Omni equivalent field.
+The migrator writes neither `timeframes:` nor `datatype:`. If you need to change the available timeframes by hand, check the Omni docs for the current syntax first. A timeframe of a date dimension is referenced as `${created[date]}` (or `${orders.created[date]}` from another view). The migrator rewrites Looker's `${created_date}` and `${created_raw}` to this form; other Looker timeframe fields are not rewritten.
 
 ## 6. Measures
 
@@ -187,12 +250,45 @@ required_access_grants: [can_view_financials]
 ```
 
 - `joins` is a tree: a view nested under another is joined through it.
-- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`.
+- `fields` is a list of selectors: `all_views.*`, `view.*`, `tag:<value>`, `view:tag:<value>` and `view.field`, each excluded with a leading `-`. Omni evaluates them in that order of selector type, not in list order, so `[all_views.*, -users.*, users.id]` exposes only `id` from `users`. A query that uses an excluded field is rejected. The migrator writes Looker explore and join `fields:` restrictions here (for example `[all_views.*, -users.*, users.id, users.name, -order_items.cost, "-tag:table_key"]`). See <https://docs.omni.co/modeling/topics/parameters/fields>.
+- A date filter in `default_filters` can be a named period: `is: last month`.
+- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`, `views`, `relationships`, `default_filters`, `extends`, `template`.
+- `views` holds topic-scoped view definitions, keyed by the view's name in the topic. The migrator uses it for three things: declaring a base view alias (`extends: [real_view]`), a `label` for a view in this topic, and dimensions and measures whose SQL references a join alias of this topic. Such a field fails model validation in a view file and validates here:
+
+```yaml
+base_view: sales
+views:
+  sales:
+    extends: [sales_fact]
+    dimensions:
+      store_label:
+        sql: ${shop.store_name}
+relationships:
+- join_from_view: sales
+  join_to_view: stores
+  join_to_view_as: shop
+  on_sql: ${sales.store_key} = ${shop.store_key}
+joins:
+  shop: {}
+```
+
+- Topic names must be unique in a model: topic files are not namespaced by folder.
+- `relationships` (topic-scoped join definitions, same keys as section 9) applies to this topic only. `joins` is still required: it declares which views are in the topic and how they nest.
+- `default_filters` is keyed by `view.field`. An entry with `required: true` beside its operator can be changed by users but not removed, and must have a value:
+
+```yaml
+default_filters:
+  order_items.created:
+    time_for_duration: [7 complete days ago, 7 days]
+    required: true
+```
+
+- `extends: [other_topic]` inherits another topic; values set in the extending topic override the inherited ones, and its `joins:` replaces the inherited `joins:`. `template: true` marks a topic that can only be used through `extends`.
 - When curating a topic for business users, prefer an explicit field list over wildcards.
 
 ## 9. Relationships
 
-A `.relationships` file is a plain YAML list:
+Join definitions are a plain YAML list. The migrator writes them inside the topic file under `relationships:` by default, or to a `.relationships` file with `--relationships-file`:
 
 ```yaml
 - join_from_view: order_items
@@ -212,8 +308,8 @@ A `.relationships` file is a plain YAML list:
 
 - `join_type`: `always_left`, `inner`, `full_outer`, `cross`.
 - `relationship_type`: `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`.
-- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once.
-- Relationships apply to the whole model, not one topic. Define each pair once.
+- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once. An alias declared in a topic's own `relationships:` is scoped to that topic: two topics can use the same alias for different views.
+- Relationships in a relationships file apply to the whole model, not one topic: define each pair once. Relationships under a topic's `relationships:` key apply to that topic only.
 
 ## 10. Tags
 
@@ -230,6 +326,7 @@ Hidden out-of-scope fields carry only `in_omni_in_looker_not_csv`.
 - Spaces, never tabs; consistent indentation.
 - Keys are case-sensitive.
 - Multi-line strings use `|` or `|-`.
+- A string that starts with `{{` must be a block scalar or double-quoted. The migrator writes every SQL that holds Mustache as a block scalar.
 - Lists can be `[a, b]` or `- a`.
 
 If a file does not parse, Omni may ignore the whole view.

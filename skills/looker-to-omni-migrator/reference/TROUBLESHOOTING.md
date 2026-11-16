@@ -44,6 +44,7 @@ Error: No CSV rows found for owner=Team A, phase=0, view=users
 - The owner must match exactly: `"Team A"` does not match `"team a"` or `"Team A "`.
 - The phase must match (`P0` and `0` are equivalent).
 - The `view` value must match the LookML `view:` name.
+- A view with no fields of its own (it only extends other views) and a template view do not need CSV rows.
 
 ```bash
 grep ",users," migration/views.csv
@@ -71,11 +72,15 @@ Explores are found in any `*.lkml` file, including model files.
 
 ### Duplicate definitions
 
-A view, explore or access grant name defined in more than one file stops the run, listing the files. This often means two models define the same view; `include:` statements are not used to choose between them. Rename or remove one copy, or point `--looker-repo` at a narrower folder.
+A view, explore or access grant name defined in more than one file stops the run, listing every file that defines it (one per line for a view), so you can decide which to rename. This often means two models define the same view; `include:` statements are not used to choose between them. Rename or remove one copy, or point `--looker-repo` at a narrower folder.
 
 ### Table name cannot be parsed
 
 A `sql_table_name` with Liquid, `${other_view.SQL_TABLE_NAME}`, more than three dot-separated parts, or other unparseable content fails the view. Migrate that view by hand or simplify the LookML.
+
+### SQL_TABLE_NAME cannot be substituted
+
+In derived table SQL, `${view.SQL_TABLE_NAME}` is replaced only when `view` has a literal `sql_table_name`. The error names the case that blocked it: the view is itself a derived table, was not found under `--looker-repo`, is defined more than once, has a templated table name, has no `sql_table_name`, or has refinements. Write the table (or the inlined SQL) into the derived table by hand.
 
 ### Native derived table not supported
 
@@ -109,9 +114,28 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `Custom value_format '...' not migrated; set an Omni format manually` | Pick an Omni format |
 | `No primary key dimension in the final view` | Add the key to the CSV and re-run, or set `primary_key: true` |
 | `View is refined in ...; refinements are not applied` | Apply the refinement by hand |
-| `View extends ...; inherited fields are not included` | Migrate the base view too, or copy the fields |
+| `View extends ...; inherited fields are not included (...)` | A parent view is missing, defined twice, or the chain is circular (the reason is in brackets). Point `--looker-repo` at the whole project, or copy the fields |
+| `CSV fields inherited through extends are not written in ...` | The rows name fields a parent view defines. List them in the CSV under that parent and migrate it |
+| `...: depends on inherited field x (from view p), which is not migrated` | The parent view cannot convert `x`. Fix it there first |
+| `No CSV rows for template view ...` | The template was migrated with every field hidden. Add its fields to the CSV under the template's name |
+| `...: MANUAL ACTION REQUIRED: sql uses Liquid that is not converted automatically: ...` | The constructs named have no exact Omni equivalent (`{% if %}`, a tag inside a longer quoted string, an unresolved reference, ...). Rewrite that SQL by hand with Omni Mustache |
+| `the derived table sql uses Liquid that is not converted automatically: ...` (exit 1) | Same, for a derived table: the view is not written. Migrate it by hand |
+| `User attributes used in translated SQL; create them in Omni: ...` | Create each user attribute in Omni under the same name |
+| `x: \`type: column\` quotes the value as an identifier ...` | Check each allowed value of the parameter is a full column or `schema.table` name |
+| `...: the \`type: unquoted\` parameter is used both as an identifier and as a quoted string ...` | An Omni filter-only field has one type. Split the parameter in two, or rewrite the SQL by hand |
 | `Join x (NOT migrated): sql_on uses Liquid...` | Write the relationship by hand |
-| `always_filter (NOT carried)` | Recreate with an Omni topic filter |
+| `Unresolved field references` | A `${alias.field}` in a join condition or a row restriction names a field the aliased view does not have. Fix the reference in the topic |
+| `Alias references not verified` | The view behind an alias is not under `--looker-repo`, or is defined twice. Check the references by hand |
+| `Cross-view fields needing attention` | A field that references a join alias could not be converted or checked, or carries access grants. Write it in the topic's `views:` block by hand, or define the grants |
+| `Join alias x has the name of another view` | Check that the alias means the joined view inside the topic |
+| `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
+| `Named date periods (verify)` | A required filter was written as `is: <period>`. Only `last month` was confirmed on a live Omni instance; check the others return the Looker date range |
+| `Explore field restriction (NOT carried)`, `Join field restriction on x (NOT carried)` | The `fields:` list could not be resolved with confidence (the item gives the reason). Restrict the topic `fields:` by hand |
+| `Field restrictions (carried)` | Check the fields exist under these names in Omni. Omni rejects a query that uses a restricted field, where Looker hides the field |
+| `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |
+| `Explore inheritance (extends)` ... `were not merged` | A parent explore is missing, declared twice or circular. Point `--looker-repo` at the whole project, or merge by hand |
+| `Explore inheritance (extends, merged)` | Migrate the parent explores too, so the topics in `extends:` exist |
+| `Template topic is not extended` | The explore has `extension: required` but nothing extends it. Extend the topic or drop it |
 
 ## Other issues
 
@@ -125,7 +149,15 @@ It could not be converted, or it depends on a field that could not be. Look unde
 
 ### A field references `${created_date}` and is missing
 
-Looker timeframe fields do not exist in Omni. The field is reported, not rewritten. Rewrite the reference to the base dimension (for example `${created}`) by hand.
+References to the `date` and `raw` timeframes are rewritten (`${created[date]}`). A reference to another timeframe (`${created_month}`) is reported, not rewritten, because Looker renders it as a string or an integer and Omni as a date. Rewrite the SQL by hand with the Omni timeframe that keeps the comparison correct.
+
+### A field that references another view is missing from the view file
+
+A field whose SQL names a join alias (`${shop.store_name}`) is listed under "Topic-scoped fields" in the view report. It is written by `--explore`, in the `views:` block of each topic that declares the alias.
+
+### Two explores have the same name
+
+Topic names must be unique in an Omni model. Migrate each with `--topic-prefix` (a name, or `model` for the Looker model file that holds the explore).
 
 ### Earlier output was changed
 
@@ -133,7 +165,7 @@ A view run merges into the existing `{view}.view.yaml` in `--omni-repo`. Delete 
 
 ### The relationships file disappeared
 
-An explore run that produces no joins removes the old `{explore}.relationships`.
+Explore runs now write the join definitions inside `{explore}.topic.yaml` (under `relationships:`) and remove a `{explore}.relationships` left by an earlier run. Pass `--relationships-file` to keep the separate file; in that mode a run that produces no joins removes it.
 
 ### Can't find the output files
 

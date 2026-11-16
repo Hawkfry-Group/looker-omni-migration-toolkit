@@ -50,6 +50,9 @@ class OmniDimension(BaseModel):
     hidden: Optional[bool] = Field(None, description="True if hidden from UI")
     timeframes: Optional[List[str]] = Field(None, description="For date dimensions: [raw, date, week, month, ...]")
     datatype: Optional[Literal["timestamp", "date"]] = Field(None, description="Only for date dimensions with timeframes")
+    convert_tz: Optional[bool] = Field(
+        None, description="False keeps the database timezone with no conversion (Looker convert_tz: no); "
+                          "omitted otherwise (Omni's default is true)")
     ai_context: Optional[str] = Field(None, description="Detailed context for AI")
     synonyms: Optional[List[str]] = Field(None, description="Alternative terms")
     sample_values: Optional[List[Any]] = Field(None, description="Example values")
@@ -173,6 +176,39 @@ class OmniMeasure(BaseModel):
         return self
 
 
+class OmniFilter(BaseModel):
+    """
+    Omni filter-only field (a view's top-level `filters:` entry)
+
+    It holds no column. Its value is read in SQL through Mustache:
+    `{{# view.field.filter }} expr {{/ view.field.filter }}`,
+    `{{ filters.view.field.value }}`, `.range_start`, `.range_end`.
+    Converted from a Looker `filter:` or `parameter:`.
+    """
+    type: Literal["string", "number", "timestamp", "boolean", "column"] = Field(
+        ..., description="Value type. `column` renders the value as a quoted identifier")
+    label: Optional[str] = None
+    description: Optional[str] = None
+    group_label: Optional[str] = None
+    hidden: Optional[bool] = None
+    suggestion_list: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Allowed values: items with `value` and an optional `label`")
+    suggest_from_field: Optional[str] = Field(None, description="view.field whose values are suggested")
+    default_filter: Optional[Dict[str, Any]] = Field(None, description="Value used when none is given, e.g. {is: a}")
+    filter_single_select_only: Optional[bool] = Field(None, description="Force a single value (Looker parameter)")
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator('suggestion_list')
+    @classmethod
+    def validate_suggestions(cls, v):
+        """Every suggestion needs a value"""
+        for item in v or []:
+            if 'value' not in item or item['value'] is None or set(item) - {'value', 'label'}:
+                raise ValueError("suggestion_list items take `value` and an optional `label`")
+        return v
+
+
 class OmniQuery(BaseModel):
     """
     Omni native derived table (query-based)
@@ -193,40 +229,43 @@ class OmniView(BaseModel):
     """
     Omni view definition
 
-    Supports three types:
+    Supports four types:
     1. Standard table view: uses table_name
     2. SQL derived table: uses sql
     3. Native derived table: uses query (from Looker explore_source)
+    4. Template view (`template: true`): no schema and no source; other
+       views extend it and supply the table
 
     File extension: .view.yaml or .query.view
     """
     # Stored as `schema_` because `schema` shadows a BaseModel attribute;
     # it is read and written as `schema` via the alias.
-    schema_: str = Field(..., alias="schema", description="Schema name (e.g., thelook_ecommerce)")
+    schema_: Optional[str] = Field(None, alias="schema", description="Schema name (e.g., thelook_ecommerce); not set on a template view")
     catalog: Optional[str] = Field(None, description="Database/project when the connection spans several (3-part table names)")
     folder: str = Field(..., description="Folder path (e.g., thelook_ecommerce/curated)")
     label: str = Field(..., description="Human-friendly view label")
     description: str = Field(..., description="Concise view description")
     tags: List[str] = Field(..., description="View-level tags")
 
-    # EXACTLY ONE of these three must be present:
+    # EXACTLY ONE of these three must be present (none on a template view):
     table_name: Optional[str] = Field(None, description="Base table name (for standard views)")
     sql: Optional[str] = Field(None, description="Raw SQL query (for SQL derived tables)")
     query: Optional[OmniQuery] = Field(None, description="Query definition (for native derived tables)")
 
     # Optional view-level fields
     ai_context: Optional[str] = None
-    extends: Optional[str] = Field(None, description="View to extend from")
+    extends: Optional[List[str]] = Field(None, description="Views to extend, in order (the first wins a conflict in Omni)")
     template: Optional[bool] = Field(None, description="True if this is a template view (abstract)")
 
     # Fields
     dimensions: Optional[Dict[str, OmniDimension]] = Field(default_factory=dict)
     measures: Optional[Dict[str, OmniMeasure]] = Field(default_factory=dict)
+    filters: Optional[Dict[str, OmniFilter]] = Field(None, description="Filter-only fields (Looker filter and parameter)")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @property
-    def schema_name(self) -> str:
+    def schema_name(self) -> Optional[str]:
         """Warehouse schema of the view"""
         return self.schema_
 
@@ -249,13 +288,16 @@ class OmniView(BaseModel):
 
     @model_validator(mode='after')
     def validate_table_or_sql_or_query(self):
-        """Ensure exactly one of table_name, sql, or query is present"""
-        table_name = self.table_name
-        sql = self.sql
-        query = self.query
+        """Exactly one of table_name, sql or query, with a schema; a template view has none of them"""
+        non_none = [s for s in (self.table_name, self.sql, self.query) if s is not None]
 
-        sources = [table_name, sql, query]
-        non_none = [s for s in sources if s is not None]
+        if self.template:
+            if non_none or self.schema_ is not None or self.catalog is not None:
+                raise ValueError("A template view cannot have schema, catalog, table_name, sql or query")
+            return self
+
+        if self.schema_ is None:
+            raise ValueError("View must have a schema")
 
         if len(non_none) == 0:
             raise ValueError("View must have exactly one of: table_name, sql, or query")
@@ -298,11 +340,22 @@ class OmniTopic(BaseModel):
     Supports both test topics (single view, no joins) and real topics (from explores, with joins)
     """
     base_view: str = Field(..., description="Base view name (e.g., order_items)")
+    extends: Optional[List[str]] = Field(None, description="Topics this topic inherits from (Looker explore extends)")
+    template: Optional[bool] = Field(None, description="Abstract topic that can only be used through extends")
     label: str = Field(..., description="Topic label")
     group_label: Optional[str] = Field(None, description="Optional group label for organizing topics")
     description: str = Field(..., description="Concise topic description")
     fields: List[str] = Field(..., description="List of fields (supports wildcards like all_views.*)")
+    views: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None, description="Topic-scoped view definitions, keyed by the view's name in the topic: a base alias "
+                          "(`extends: [real_view]`), a label, and the dimensions and measures that reference "
+                          "join aliases of this topic (serialised like the fields of a view file)")
+    relationships: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Topic-scoped relationships (join conditions for the views under joins)")
     joins: Dict = Field(default_factory=dict, description="Join definitions (empty for single-view topics)")
+    default_filters: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None, description="Default filters, keyed by view.field. `required: true` beside the operator "
+                          "makes the filter changeable but not removable (Looker always_filter)")
     ai_context: str = Field(..., description="Detailed context for AI")
 
     # Row/topic-level security carried over from the Looker explore
@@ -320,6 +373,30 @@ class OmniTopic(BaseModel):
         """Ensure fields list is not empty"""
         if not v:
             raise ValueError("Topic must have at least one field")
+        return v
+
+    @field_validator('views')
+    @classmethod
+    def validate_views(cls, v):
+        """Only the keys the migrator writes in a topic's `views:` block, and no empty block"""
+        for name, block in (v or {}).items():
+            unknown = set(block) - {'label', 'extends', 'dimensions', 'measures'}
+            if unknown:
+                raise ValueError(f"Unsupported keys in views.{name}: {', '.join(sorted(unknown))}")
+            if not any(block.get(key) for key in ('label', 'extends', 'dimensions', 'measures')):
+                raise ValueError(f"views.{name} is empty")
+        return v
+
+    @field_validator('default_filters')
+    @classmethod
+    def validate_required_filters_have_value(cls, v):
+        """A required default filter must carry an operator with a value"""
+        for field_name, condition in (v or {}).items():
+            if not condition.get('required'):
+                continue
+            values = [value for key, value in condition.items() if key != 'required']
+            if not values or any(value is None or value == [] or value == '' for value in values):
+                raise ValueError(f"Required default filter on {field_name} must have a value")
         return v
 
 
@@ -342,6 +419,13 @@ class MigrationReport(BaseModel):
     notes_risks: List[Dict[str, str]]
     advanced_features: Optional[List[Dict[str, str]]] = None  # NEW: templated views, access grants, etc.
     merge_info: Optional[Dict[str, Any]] = None  # Merge/enrich stats when existing Omni view was found
+    # Liquid translated to Omni Mustache: [{'where': SQL block, 'items': ["`looker` → `omni`"]}]
+    liquid_translated: Optional[List[Dict[str, Any]]] = None
+    # Timeframe references rewritten: [{'where': field, 'items': ["`${created_date}` → `${created[date]}`"]}]
+    timeframes_rewritten: Optional[List[Dict[str, Any]]] = None
+    # Fields left out of the view file because they need a join alias:
+    # [{'field', 'kind', 'aliases', 'inherited_from' (optional)}]
+    topic_scoped_fields: Optional[List[Dict[str, str]]] = None
 
     def to_markdown(self) -> str:
         """Convert to markdown report"""
@@ -407,6 +491,34 @@ class MigrationReport(BaseModel):
         else:
             md += "(none)\n"
         md += "\n"
+
+        if self.liquid_translated:
+            md += "## Liquid translated\n"
+            md += "Looker Liquid rewritten as Omni Mustache. Check each one against Looker.\n\n"
+            for block in self.liquid_translated:
+                md += f"- **{block['where']}**\n"
+                for item in block['items']:
+                    md += f"  - {item}\n"
+            md += "\n"
+
+        if self.timeframes_rewritten:
+            md += "## Timeframe references rewritten\n"
+            md += ("References to the `date` and `raw` timeframes of a dimension group, rewritten to Omni's "
+                   "`${dimension[timeframe]}`.\n\n")
+            for block in self.timeframes_rewritten:
+                md += f"- **{block['where']}**: {', '.join(block['items'])}\n"
+            md += "\n"
+
+        if self.topic_scoped_fields:
+            md += "## Topic-scoped fields\n"
+            md += ("These fields reference another view through a join alias. Omni model validation rejects such a "
+                   "field in a view file, so they are not written here. Explore mode (`--explore`) writes each one "
+                   "into the `views:` block of every topic that declares the aliases it needs. Nothing to do in "
+                   "this view.\n\n")
+            for item in self.topic_scoped_fields:
+                origin = f", inherited from `{item['inherited_from']}`" if item.get('inherited_from') else ""
+                md += f"- **{item['field']}** ({item['kind']}{origin}): needs {item['aliases']}\n"
+            md += "\n"
 
         # NEW: Advanced Features section
         if self.advanced_features:

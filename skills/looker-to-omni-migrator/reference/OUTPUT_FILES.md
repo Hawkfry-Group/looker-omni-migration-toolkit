@@ -6,8 +6,8 @@
 <--omni-repo>/                    # default migration/staging/views (explore mode: .../topics)
 ├── {view}.view.yaml              # table-based view
 ├── {view}.query.view             # derived table
-├── {explore}.topic.yaml          # explore mode
-└── {explore}.relationships       # explore mode, only if at least one join converts
+├── {explore}.topic.yaml          # explore mode (joins and their relationships)
+└── {explore}.relationships       # explore mode with --relationships-file, only if at least one join converts
 <sibling>/reports/
 ├── {view}.migration.md
 ├── {view}_explore_analysis.md    # --explore-analysis
@@ -71,11 +71,25 @@ Notes:
 - `sql:` is omitted where a dimension reads its own column (`id`, `email`).
 - `email` is out of scope, so it is hidden and tagged only `in_omni_in_looker_not_csv`. Its access grant is still copied.
 - A three-part `sql_table_name` adds a `catalog:` key.
+- A date dimension from a Looker field with `convert_tz: no` has `convert_tz: false`.
 - Generated `label`, `description` and `ai_context` are a starting point; improve them during review.
+
+### Template and extending views
+
+- A template view (Looker `extension: required`, or a view with no table that is only extended) is written as `{view}.view.yaml` with `template: true` and without `schema` and `table_name`.
+- A view that extends others gets `extends: [parent_a, parent_b]` after its source. Inherited fields are not repeated in it. A field its parents define differently is written with the Looker definition and the tag `resolved_from_extends`.
+- A view with no fields of its own is written with its header and `extends:` only.
+- The report's Advanced Features section gains "View Inheritance (extends)" (the chain and the origin of each inherited field), "Template View", "Extends Conflict", "Inherited View Source" and "CSV Fields Inherited Through extends" when they apply.
 
 ### Derived-table view
 
 `{view}.query.view` with either `sql:` (SQL derived table) or `query:` (native derived table). See [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
+
+### Filter-only fields and templated SQL
+
+- A view with a Looker `filter:` or `parameter:` gets a top-level `filters:` key after `dimensions:` and `measures:`, one entry per filter-only field.
+- SQL that holds Omni Mustache (translated Liquid) is always written as a block scalar (`sql: |-`), for a field as well as for a derived table, and is not reformatted.
+- The report gains a "Liquid translated" section (each Liquid construct and the Mustache written for it, per SQL block) and, under Advanced Features, "Parameters and Filter-Only Fields" (type and visibility of each), "User Attributes (translated)" and "Templated Fields Rewritten From extends" when they apply.
 
 ## 2. Migration report (`{view}.migration.md`)
 
@@ -138,7 +152,7 @@ Migrated users from Looker to Omni as users. Converted 3 dimensions and 1 measur
 | Notes / Risks | `HIGH RISK` (field not written, missing primary key), `MEDIUM RISK` (format not migrated and similar), `INFO` (dependencies) |
 | Advanced Features Detected | Access grants, access filters, refinements, `extends`, parameters, derived tables, persistence; each with a status such as `CARRIED - MANUAL ACTION REQUIRED`, `NOT MIGRATED` or `CONVERTED` |
 
-## 3. Topic and relationships files
+## 3. Topic files and relationships
 
 From `--explore order_items` on the sample:
 
@@ -148,6 +162,13 @@ base_view: order_items
 label: Order Items
 description: Sales by item, with the customer who placed each order
 fields: [all_views.*, "-tag:table_key"]
+relationships:
+- join_from_view: order_items
+  join_to_view: users
+  join_type: always_left
+  on_sql: ${order_items.user_id} = ${users.id}
+  relationship_type: many_to_one
+  reversible: false
 joins:
   users: {}
 ai_context: |-
@@ -157,6 +178,8 @@ access_filters:
 - field: users.country
   user_attribute: allowed_country
 ```
+
+With `--relationships-file` the topic has no `relationships:` key and the same list is written to a separate file:
 
 ```yaml
 # order_items.relationships
@@ -170,14 +193,19 @@ access_filters:
   reversible: false
 ```
 
-- Topic keys the migrator can write: `base_view`, `label`, `description`, `fields`, `joins`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `required_access_grants`, `hidden`, `group_label`.
-- `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it.
-- Joins that were not migrated are listed in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`) and in the report.
-- If a run produces no joins, an older `{explore}.relationships` is removed.
+- Topic keys the migrator can write: `base_view`, `extends`, `template`, `label`, `group_label`, `description`, `fields`, `views`, `relationships`, `joins`, `default_filters`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `hidden`, `required_access_grants`.
+- `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it. It is written in both modes.
+- `views` is written when the explore has a base alias (`<alias>: { extends: [real_view] }`), a `view_label` that differs from the view's label, or fields that reference a join alias of the topic (written like the fields of a view file, under the view's name in the topic).
+- With `--topic-prefix VALUE` the files are `{VALUE}__{explore}.topic.yaml` and `{VALUE}__{explore}_explore.md`.
+- `fields` is `[all_views.*, "-tag:table_key"]` unless the explore or a join has a `fields:` restriction. Then it holds the selectors the restrictions became, for example `[all_views.*, -users.*, users.id, users.name, -order_items.cost, "-tag:table_key"]`, and the explore report has a "Field restrictions" section with the Looker lists, the topic list and every entry dropped or mapped.
+- `default_filters` holds the explore's `always_filter` entries that could be translated, each with `required: true`. A named period is written as `is: last month`.
+- `extends` is written when the explore's parent chain was resolved; the topic then also carries the merged joins, relationships and settings. `template: true` is written for an explore with `extension: required`, or with `--template`.
+- Joins that were not migrated are listed in the report and, with `--relationships-file`, in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`).
+- A `{explore}.relationships` left by an earlier run is removed when the run writes the relationships into the topic, or produces no joins.
 
 ### Explore report (`{explore}_explore.md`)
 
-Sections: Summary (explore, source file, base view, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Join Definitions (each join with type, relationship, SQL, and whether it was migrated), Generated Files, Notes.
+Sections: Summary (explore, source file, base view, topic type with the reason for `template: true` or a normal topic, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Inheritance (only when `extends` was merged: explores merged, inherited joins and settings with their origin, overrides), Alias map (alias, real view, where declared), Topic-scoped fields (only when a view of the topic has fields that reference a join alias: written, left out, or not written with the reason), Join Definitions (each join with type, relationship, SQL, whether it was migrated and which explore it was inherited from), Generated Files, Notes.
 
 ## 4. Explore analysis report (`{view}_explore_analysis.md`)
 
@@ -212,7 +240,7 @@ The source files, then a table of every grant with its user attribute, allowed v
 
 - Blank line between fields; tags written inline (`tags: [mig_phase_0, verified]`).
 - When a merge puts a Looker field under an existing field of another name, that field also gets the tag `from_looker__<looker field>` (for example `from_looker__customer_email` on `email`). Keep it: later runs use it to find the Looker field and apply its access grants.
-- SQL for derived tables is formatted with `sqlparse` and written as a `|-` block.
+- SQL for derived tables is formatted with `sqlparse` and written as a `|-` block. SQL that holds Mustache keeps the lines of the LookML.
 - When merging, unknown top-level keys in the existing view are kept.
 - Every view is validated against the tool's Pydantic models before it is written. This is not a check against a live Omni instance.
 

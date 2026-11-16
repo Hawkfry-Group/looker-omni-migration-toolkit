@@ -7,7 +7,7 @@ A Claude Code skill and Python CLI that converts LookML views and explores into 
 | Input | Output |
 |-------|--------|
 | Looker view (`--view`) | `{view}.view.yaml`, or `{view}.query.view` for a derived table, plus `{view}.migration.md` |
-| Looker explore (`--explore`) | `{explore}.topic.yaml`, `{explore}.relationships` (when at least one join converts), plus `{explore}_explore.md` |
+| Looker explore (`--explore`) | `{explore}.topic.yaml` (joins and their relationships in one file), plus `{explore}_explore.md`. With `--relationships-file`, also `{explore}.relationships` |
 | Access grants (`--parse-access-grants`) | `access_grants.md` listing each grant, user attribute and allowed values |
 
 Default output locations, relative to where you run the CLI:
@@ -89,14 +89,36 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | `dimension` with `type:` | dimension without `type:` |
 | `${TABLE}.column` | raw `column`, or `${field}` when another dimension is exactly that column; `sql:` omitted when a dimension reads its own column |
 | `dimension_group` (`type: time`) | one dimension; Omni provides the timeframes |
+| `${created_date}`, `${view.created_raw}` (timeframe of a dimension group) | `${created[date]}`, `${view.created[raw]}`; other timeframes are reported, not rewritten |
 | `measure` `type: sum` (and count, count_distinct, average, min, max, median, list, percentile) | `aggregate_type` of the same name |
 | `measure` `type: number`, `string`, `yesno`, `date` | calculated measure (SQL kept, no `aggregate_type`) |
 | `value_format_name: usd` / `decimal_2` | `format: usdcurrency_2` / `number_2` |
 | `${field}`, `${view.field}` | unchanged |
+| `dimension_group` with `convert_tz: no` | dimension with `convert_tz: false` |
 | `derived_table: { sql: ... }` | `{view}.query.view` with `sql:` |
+| `${view.SQL_TABLE_NAME}` in derived table SQL, pointing at a view with a literal `sql_table_name` | the table name, verbatim; blocked when the view is a derived table, is not found or has a templated table name |
+| SQL comment that holds Liquid (`-- {% if %} ...`) | removed from the SQL and listed in the report |
 | `derived_table: { explore_source: ... }` | `{view}.query.view` with `query:` |
-| explore `join` | topic join plus `.relationships` entry |
+| `filter:`, `parameter:` | filter-only field under the view's `filters:` key (`allowed_value` becomes `suggestion_list`, `default_value` becomes `default_filter`) |
+| `{% condition f %} x {% endcondition %}` | `{{# view.f.filter }} x {{/ view.f.filter }}` |
+| `{% parameter p %}`, `{{ p._parameter_value }}` | `{{ filters.view.p.value }}` (quotes directly around the tag are dropped) |
+| `{% date_start f %}`, `{% date_end f %}` | `{{ filters.view.f.range_start }}`, `{{ filters.view.f.range_end }}` |
+| `{{ view.f._in_query }}`, `._is_selected`, `._is_filtered` | `{{ view.f.in_query }}`, `.is_selected`, `.is_filtered` |
+| `{{ _user_attributes['x'] }}` | `{{ omni_attributes.x }}` |
+| `{% if %}`, `{% assign %}`, loops, Liquid filters | not converted; the SQL block is left out and the construct is named in the report |
+| view `extends: [a, b]` | view `extends: [a, b]`; a field the parents define differently is written into the child (Looker: last parent wins, Omni: first) and tagged `resolved_from_extends` |
+| view `extension: required`, or a view with no table that is only extended | view `template: true`, without `schema` and `table_name` |
+| explore `join` | topic join plus an entry under the topic's `relationships:` |
+| `join: shop { from: stores }` | `join_to_view: stores` with `join_to_view_as: shop`, scoped to the topic |
+| explore `from:` / `view_name:` that rename the base view | `base_view: <alias>`, declared in the topic's `views:` block with `extends: [real_view]` |
+| explore or join `view_label` | `label` for that view in the topic's `views:` block |
+| field whose SQL names a join alias (`${shop.store_name}`) | left out of the view file; written in the `views:` block of each topic that has the alias |
 | explore `access_filter`, `sql_always_where`, `sql_always_having` | topic `access_filters`, `always_where_sql`, `always_having_sql` |
+| explore `always_filter` (`N days ago for N days`, named periods such as `last month`, string values, a number) | topic `default_filters` entry with `required: true`; other expressions are reported |
+| explore `fields: [ALL_FIELDS*, -view.a]` | topic `fields: [all_views.*, -view.a, "-tag:table_key"]` |
+| join `fields: [view.x]`, `fields: []`, `fields: [-view.x]` | `-view.*, view.x`; `-view.*`; `-view.x` in the topic `fields:` (sets expanded) |
+| explore `extends` | topic `extends`, with the merged joins and settings written into the topic |
+| explore `extension: required` | topic `template: true` |
 | `required_access_grants` | copied; grant definitions are MANUAL ACTION REQUIRED |
 
 Full rules: [rules/migration_rules.md](rules/migration_rules.md).
@@ -113,11 +135,18 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - Model `include:` boundaries are ignored: every `*.lkml` under `--looker-repo` is searched, and duplicate names stop the run.
 - LookML refinements are reported, not applied.
 - Each file is written atomically; a whole run is not.
-- Omni relationships are model-wide, so separate `.relationships` files can conflict.
+- Relationships are written topic-scoped. With `--relationships-file` they are model-wide in Omni, so separate `.relationships` files can conflict.
+- `always_filter` is translated for a small set of expressions only; `N days` and other period expressions are reported. Named periods other than `last month` are written and flagged for verification. `conditionally_filter` is reported only.
+- Field restrictions (`fields:`) are carried as topic selectors. Looker hides a restricted field; Omni rejects queries that use it. A list that cannot be resolved with confidence is reported, not carried.
+- An extending topic needs its parent topic in the Omni model: migrate the parent explores too.
+- An extending view needs its parent views in the Omni model: migrate every view of the chain. Inherited fields are not copied, so their visibility follows the parent view's CSV scope.
 - Explore mode does not rewrite join SQL for fields renamed by a merge.
 - The CSV `omni_view` / `omni_field` columns are tracking only.
-- References to Looker timeframe fields (for example `${created_date}`) are reported, not rewritten.
-- Not converted: `drill_fields`, `link`, `html`, `map_layer_name`, parameters, Liquid, `case`, `tiers`, and `tier`/`location`/`distance` dimensions.
+- References to Looker timeframe fields other than `date` and `raw` (for example `${created_month}`) are reported, not rewritten.
+- Fields that reference a join alias are written by explore mode, which has no scope CSV: they are visible unless Looker hides them.
+- Topic names must be unique in an Omni model. Use `--topic-prefix` when two Looker models have explores of the same name. An explore whose base alias is also the name of another view is not migrated.
+- Liquid converts only in derived table SQL and field `sql:`, only for the constructs in the table above, and only when every construct of the SQL block converts. `{% if %}`, `{% assign %}`, loops and Liquid filters stay manual, as does a `type: unquoted` parameter that is not clearly a whole identifier or a quoted string.
+- Not converted: `drill_fields`, `link`, `html`, `map_layer_name`, `case`, `tiers`, and `tier`/`location`/`distance` dimensions.
 - One view per run (no batch mode) and one topic per explore.
 
 ## Documentation

@@ -28,8 +28,20 @@ def test_explore_matches_expected(tmp_path):
     result = run_cli("--explore", "order_items", "--looker-repo", EXAMPLES / "simple",
                      "--omni-repo", tmp_path / "topics", cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
-    for name in ("order_items.topic.yaml", "order_items.relationships"):
-        assert load_yaml(tmp_path / "topics" / name) == load_yaml(EXPECTED / name), name
+    assert load_yaml(tmp_path / "topics" / "order_items.topic.yaml") == load_yaml(EXPECTED / "order_items.topic.yaml")
+    assert not (tmp_path / "topics" / "order_items.relationships").exists()
+
+
+def test_explore_with_relationships_file_matches_expected(tmp_path):
+    """--relationships-file: the same joins in a separate file, none in the topic"""
+    result = run_cli("--explore", "order_items", "--looker-repo", EXAMPLES / "simple", "--relationships-file",
+                     "--omni-repo", tmp_path / "topics", cwd=tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected_topic = load_yaml(EXPECTED / "order_items.topic.yaml")
+    relationships = expected_topic.pop("relationships")
+    assert load_yaml(tmp_path / "topics" / "order_items.topic.yaml") == expected_topic
+    assert load_yaml(tmp_path / "topics" / "order_items.relationships") == relationships
+    assert relationships == load_yaml(EXPECTED / "order_items.relationships")
 
 
 def test_documented_quick_start_dry_run():

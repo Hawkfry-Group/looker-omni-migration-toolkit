@@ -108,7 +108,7 @@ python skills/looker-to-omni-migrator/scripts/migrate.py --view users --phase 0 
 # Also analyse explores that use the view (off by default)
 python skills/looker-to-omni-migrator/scripts/migrate.py --view order_items --phase 0 --owner "Data Team" --explore-analysis
 
-# Explore to topic + relationships (no --phase/--owner)
+# Explore to topic, relationships included (no --phase/--owner)
 python skills/looker-to-omni-migrator/scripts/migrate.py --explore order_items
 
 # List access grants

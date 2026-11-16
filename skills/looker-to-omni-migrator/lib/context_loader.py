@@ -243,7 +243,8 @@ def load_migration_context(
     csv_path: str,
     owner: str,
     phase: int,
-    view: Optional[str] = None
+    view: Optional[str] = None,
+    allow_empty: bool = False
 ) -> MigrationContext:
     """
     Load complete migration context
@@ -254,12 +255,14 @@ def load_migration_context(
         owner: Owner filter
         phase: Phase filter
         view: Optional view filter
+        allow_empty: Return an empty scope instead of raising when no CSV
+            row matches (the caller decides whether that is an error)
 
     Returns:
         MigrationContext object
 
     Raises:
-        ValueError: If no CSV rows match scope
+        ValueError: If no CSV rows match scope (unless allow_empty)
     """
     context = MigrationContext()
 
@@ -272,7 +275,7 @@ def load_migration_context(
     # Load and filter CSV
     csv_rows = load_and_filter_csv(csv_path, owner, phase, view)
 
-    if not csv_rows:
+    if not csv_rows and not allow_empty:
         raise ValueError(f"No CSV rows found for owner={owner}, phase={phase}, view={view}")
 
     context.csv_rows = csv_rows

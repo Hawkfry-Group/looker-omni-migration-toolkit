@@ -11,6 +11,7 @@ Handles the field-level conversion from Looker to Omni:
 1. Dimension conversion (type removal, SQL cleaning)
 2. Measure conversion (type -> aggregate_type, filters, format)
 3. Dimension group conversion (dimension_group -> one date dimension)
+   and filter-only fields (`filter:` / `parameter:` -> an Omni `filters:` entry)
 4. Canonical label mapping (optional, from `--config`)
 5. Metadata generation (ai_context, synonyms, tags)
 6. Dependency detection (same-view `${field}` references)
@@ -61,7 +62,7 @@ full_name:
 | `${field}` | `${field}` | Same-view reference, recorded as a dependency |
 | `${view.field}` | `${view.field}` | Cross-view reference, unchanged; the view must be joined in the topic |
 | `${TABLE}."col"`, `${TABLE}` not followed by a column, `${...}` inside quotes/comments | not converted | MANUAL ACTION REQUIRED |
-| `{% ... %}` / `{{ ... }}` | not converted | Liquid has no Omni equivalent: MANUAL ACTION REQUIRED |
+| `{% ... %}` / `{{ ... }}` | Omni Mustache, or not converted | Translated when every construct of the sql has an exact equivalent (see `liquid_translator`), else MANUAL ACTION REQUIRED naming the construct |
 
 String literals, quoted identifiers and comments are never rewritten.
 
@@ -94,7 +95,8 @@ A `type: time` dimension_group becomes a single Omni dimension named after
 the group. Looker `timeframes:` are not emitted (Omni builds timeframes for
 date/timestamp columns itself); the original list is recorded in the
 report. Not converted (reported): `type: duration`, `datatype` other than
-timestamp/datetime/date (e.g. epoch, yyyymmdd), `convert_tz: no`, `sql_date`.
+timestamp/datetime/date (e.g. epoch, yyyymmdd), `sql_date`. `convert_tz: no`
+becomes `convert_tz: false`.
 
 ## Not Migrated
 
@@ -144,7 +146,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .config import DEFAULT_CANONICAL_MAPPINGS
-from .omni_models import AggregateType, OmniDimension, OmniMeasure
+from .liquid_translator import (
+    FILTER_TYPE_MAP,
+    MUSTACHE_RE,
+    LiquidContext,
+    LiquidTranslation,
+    contains_liquid,
+    translate_liquid,
+)
+from .omni_models import AggregateType, OmniDimension, OmniFilter, OmniMeasure
 
 
 def normalize_tag(tag: str) -> str:
@@ -212,13 +222,18 @@ CALCULATED_MEASURE_TYPES = {'number', 'string', 'yesno', 'date'}
 UNSUPPORTED_DIMENSION_TYPES = {'tier', 'location', 'distance'}
 UNSUPPORTED_DIMENSION_PARAMS = ('case', 'tiers')
 
+# Dimension types that hold a date or time: `convert_tz: no` is carried on these
+# (on any other type Looker ignores it)
+TZ_DIMENSION_TYPES = {'date', 'date_time', 'time'}
+
 # Field parameters that are dropped (and noted) rather than converted
 DROPPED_FIELD_PARAMS = ('drill_fields', 'link', 'links', 'html', 'map_layer_name')
 
 MANUAL = "MANUAL ACTION REQUIRED"
 
 _IDENT = r'[a-zA-Z_][a-zA-Z0-9_]*'
-_LIQUID_RE = re.compile(r'\{%.*?%\}|\{\{.*?\}\}', re.DOTALL)
+# Omni's timeframe selector on a date dimension: ${created[date]}
+_TIMEFRAME_SUFFIX = r'(?:\[[a-z0-9_]+\])?'
 _COMPARISON_KEYS = {
     '>=': 'greater_than_or_equal_to',
     '<=': 'less_than_or_equal_to',
@@ -238,6 +253,56 @@ class ConversionResult:
     db_column_name: Optional[str] = None  # Warehouse column when it differs from the field name
     cross_view_refs: Set[str] = field(default_factory=set)  # "view.field" references
     dropped_params: List[str] = field(default_factory=list)  # e.g. drill_fields, html
+    liquid: Optional[LiquidTranslation] = None  # Liquid translated to Mustache in the field's sql
+    # Timeframe references rewritten in the field's sql: ["`${created_date}` → `${created[date]}`"]
+    timeframes: List[str] = field(default_factory=list)
+
+
+# Timeframes a Looker `type: time` dimension group offers. A group with no
+# `timeframes:` list has all of them.
+LOOKER_TIMEFRAMES = frozenset({
+    'raw', 'time', 'time_of_day', 'hour', 'hour_of_day', 'minute', 'second', 'millisecond', 'microsecond',
+    'date', 'week', 'day_of_week', 'day_of_week_index', 'month', 'month_num', 'month_name', 'day_of_month',
+    'fiscal_month_num', 'quarter', 'fiscal_quarter', 'quarter_of_year', 'fiscal_quarter_of_year', 'year',
+    'fiscal_year', 'day_of_year', 'week_of_year', 'yesno',
+})
+_SIZED_TIMEFRAME_RE = re.compile(r'(?:hour|minute|millisecond)\d+')
+# Timeframes with the same SQL type in Looker and Omni: a reference to one is
+# rewritten to Omni's `${dimension[timeframe]}`. Every other timeframe is a
+# formatted string or an integer in Looker and a date in Omni.
+REWRITTEN_TIMEFRAMES = ('date', 'raw')
+
+# {dimension group: its `timeframes:` list, or None when it has Looker's defaults}
+TimeGroups = Dict[str, Optional[List[str]]]
+
+
+def time_groups_of(dimension_groups: Dict[str, Dict]) -> TimeGroups:
+    """The `type: time` dimension groups of a parsed view, with their timeframes"""
+    return {
+        name: (list(data['timeframes']) if data.get('timeframes') else None)
+        for name, data in dimension_groups.items()
+        if data.get('type', 'time') == 'time'
+    }
+
+
+def match_timeframe(name: str, groups: TimeGroups) -> List[Tuple[str, str]]:
+    """
+    Every (dimension group, timeframe) the Looker field name `name` can
+    stand for: `created_date` is the `date` timeframe of group `created`
+    when that group exists and offers the timeframe
+    """
+    matches = []
+    for group, timeframes in groups.items():
+        if not name.startswith(f"{group}_"):
+            continue
+        timeframe = name[len(group) + 1:]
+        if timeframes is not None:
+            offered = timeframe in timeframes
+        else:
+            offered = timeframe in LOOKER_TIMEFRAMES or bool(_SIZED_TIMEFRAME_RE.fullmatch(timeframe))
+        if offered:
+            matches.append((group, timeframe))
+    return matches
 
 
 def _sentence(text: str) -> str:
@@ -247,8 +312,27 @@ def _sentence(text: str) -> str:
 
 
 def has_liquid(text: Optional[str]) -> bool:
-    """True if the text contains Liquid tags or output blocks"""
-    return bool(text) and bool(_LIQUID_RE.search(text))
+    """True if the text contains Liquid tags or output blocks (closed or not)"""
+    return contains_liquid(text)
+
+
+def mask_mustache(sql: str) -> Tuple[str, List[str]]:
+    """
+    Replace every Mustache token with an inert placeholder, so SQL rewriting
+    never touches the view and field names inside a token. Undo with
+    `unmask_mustache`.
+    """
+    tokens: List[str] = []
+
+    def _mask(match):
+        tokens.append(match.group(0))
+        return f"\x00{len(tokens) - 1}\x00"
+
+    return MUSTACHE_RE.sub(_mask, sql), tokens
+
+
+def unmask_mustache(sql: str, tokens: List[str]) -> str:
+    return re.sub(r'\x00(\d+)\x00', lambda match: tokens[int(match.group(1))], sql)
 
 
 class UnsafeSQL(Exception):
@@ -372,13 +456,62 @@ def translate_filter_expression(expression: Any, kind: Optional[str] = 'string')
     return {key: values[0] if len(values) == 1 else values}
 
 
+_DURATION_AGO_FOR = re.compile(
+    r'(\d+)\s+(day|week|month)s?\s+ago\s+for\s+(\d+)\s+(day|week|month)s?', re.IGNORECASE)
+_BARE_DURATION = re.compile(r'\d+\s+(?:day|week|month)s?', re.IGNORECASE)
+# Looker named periods that Omni accepts as `is: <period>` on a date field
+NAMED_DATE_PERIODS = (
+    'last month', 'this month', 'last week', 'this week', 'last year', 'this year', 'last quarter',
+    'this quarter', 'today', 'yesterday',
+)
+# Named periods confirmed on a live Omni instance; the others use the same
+# mechanism and are reported for verification
+CONFIRMED_DATE_PERIODS = ('last month',)
+
+
+def translate_date_filter_expression(expression: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Translate a Looker date filter expression into an Omni filter condition
+
+    - `N days ago for N days` (also weeks and months, same N and unit on
+      both sides, N of 1 or more) becomes
+      `time_for_duration: [N complete days ago, N days]`. "complete"
+      matters: Looker's "7 days ago for 7 days" is the last 7 complete days,
+      without today.
+    - A named period (`NAMED_DATE_PERIODS`: `last month`, `this week`,
+      `today`, ...) becomes `is: <period>`.
+
+    Returns:
+        (condition, None) when translated, else (None, reason). `N days`
+        (which includes today so far) has no confirmed Omni form and is
+        never translated.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        return None, "it has no value"
+    expr = ' '.join(expression.split())
+    if expr.lower() in NAMED_DATE_PERIODS:
+        return {'is': expr.lower()}, None
+    match = _DURATION_AGO_FOR.fullmatch(expr)
+    if match:
+        count, unit, for_count, for_unit = (g.lower() for g in match.groups())
+        if count == for_count and unit == for_unit and int(count) >= 1:
+            n = int(count)
+            return {'time_for_duration': [f"{n} complete {unit}s ago", f"{n} {unit}s"]}, None
+    elif _BARE_DURATION.fullmatch(expr):
+        return None, (f"Looker's `{expr}` includes today so far plus the prior complete periods; "
+                      f"there is no confirmed Omni form for it")
+    return None, "the expression is outside the forms translated automatically"
+
+
 def extract_measure_filters(looker_measure: Dict) -> List[Tuple[str, Any]]:
     """
     Normalize the lkml representations of measure filters to (field, expression)
 
     lkml parses `filters: [status: "Complete"]` as
     `filters__all: [[{"status": "Complete"}]]`; the older block form
-    `filters: {field: status value: "Complete"}` is also accepted.
+    `filters: {field: status value: "Complete"}` (parsed as
+    `filters__all: [{"field": "status", "value": "Complete"}]`) is also
+    accepted. The same shapes occur in an explore's `always_filter`.
     """
     pairs: List[Tuple[str, Any]] = []
 
@@ -386,6 +519,9 @@ def extract_measure_filters(looker_measure: Dict) -> List[Tuple[str, Any]]:
         items = group if isinstance(group, list) else [group]
         for item in items:
             if isinstance(item, dict):
+                if set(item) == {'field', 'value'}:
+                    pairs.append((item['field'], item['value']))
+                    continue
                 for key, value in item.items():
                     pairs.append((key, value))
 
@@ -423,7 +559,10 @@ class RuleApplier:
         canonical_mappings: Optional[Dict[str, str]] = None,
         column_fields: Optional[Dict[str, str]] = None,
         field_types: Optional[Dict[str, str]] = None,
-        type_resolver: Optional[Callable[[str, str], Optional[str]]] = None
+        type_resolver: Optional[Callable[[str, str], Optional[str]]] = None,
+        liquid_context: Optional[LiquidContext] = None,
+        time_groups: Optional[TimeGroups] = None,
+        view_fields: Optional[Callable[[str], Optional[Tuple[Set[str], TimeGroups]]]] = None
     ):
         self.phase = phase
         self.verified = verified
@@ -436,6 +575,16 @@ class RuleApplier:
         self.field_types: Dict[str, str] = dict(field_types or {})
         # Looks up the Looker type of `view.field` in other views
         self.type_resolver = type_resolver
+        # Resolves the fields named in Liquid tags. Without it only Liquid
+        # that names no field (user attributes) can be translated.
+        self.liquid_context = liquid_context or LiquidContext()
+        # `type: time` dimension groups of this view (own and inherited) with
+        # their timeframes: a `${created_date}` reference is only a timeframe
+        # reference when a group offers it
+        self.time_groups: TimeGroups = dict(time_groups or {})
+        # (field names, time groups) of another view named in `${view.field}`,
+        # None when the view is not known
+        self.view_fields = view_fields
         # Organization-specific term mappings; empty unless configured
         self.canonical_mappings = dict(
             canonical_mappings if canonical_mappings is not None else CANONICAL_MAPPINGS
@@ -532,7 +681,9 @@ class RuleApplier:
 
         out = []
         rewrote_table = rewrote_view = False
-        for text, is_code in split_sql(sql.strip()):
+        # Mustache tokens (translated Liquid) hold view and field names: keep them out of the rewriting
+        masked, mustache = mask_mustache(sql.strip())
+        for text, is_code in split_sql(masked):
             if not is_code:
                 if '${' in text:
                     raise UnsafeSQL(
@@ -559,7 +710,7 @@ class RuleApplier:
             changes.append("Converted ${TABLE}.column (field reference only when a field is exactly that column, else raw column)")
         if rewrote_view:
             changes.append(f"Converted {self.view_name}.column the same way as ${{TABLE}}.column")
-        return ''.join(out), changes, warnings
+        return unmask_mustache(''.join(out), mustache), changes, warnings
 
     def extract_db_column_name(self, sql: Optional[str], field_name: str) -> Optional[str]:
         """
@@ -584,18 +735,84 @@ class RuleApplier:
             return None
         return column if column != field_name else None
 
+    def rewrite_timeframe_references(
+        self,
+        sql: str,
+        changes: List[str],
+        warnings: List[str],
+        rewrites: List[str]
+    ) -> Optional[str]:
+        """
+        Rewrite references to dimension group timeframes for Omni
+
+        `${created_date}` becomes `${created[date]}` and `${created_raw}`
+        becomes `${created[raw]}`, with or without a view prefix, when a
+        `type: time` dimension group `created` offers that timeframe and no
+        field is really called `created_date`. Each rewrite is added to
+        `rewrites` and `changes`.
+
+        Returns:
+            The sql, or None when it references any other timeframe (or a
+            name two groups could supply): the reason is added to `warnings`
+            and the field must not be written.
+        """
+        problems: List[str] = []
+
+        def _rewrite(match):
+            view, name = match.group(1), match.group(2)
+            if view is None or view == self.view_name:
+                names, groups = set(self.field_types), self.time_groups
+            else:
+                known = self.view_fields(view) if self.view_fields else None
+                if known is None:
+                    return match.group(0)
+                names, groups = known
+            if name in names:
+                return match.group(0)  # a real field of that name, not a timeframe
+            found = match_timeframe(name, groups)
+            if not found:
+                return match.group(0)
+            ref = match.group(0)
+            if len(found) > 1:
+                problems.append(
+                    f"`{ref}` can be a timeframe of several dimension groups "
+                    f"({', '.join(group for group, _ in found)})"
+                )
+                return ref
+            group, timeframe = found[0]
+            if timeframe not in REWRITTEN_TIMEFRAMES:
+                problems.append(
+                    f"`{ref}` references the `{timeframe}` timeframe of dimension group `{group}`. Only the "
+                    f"{' and '.join(f'`{t}`' for t in REWRITTEN_TIMEFRAMES)} timeframes are rewritten: Looker "
+                    f"renders `{timeframe}` as a formatted string or an integer and Omni renders a date, so a "
+                    f"comparison in the surrounding SQL could silently change meaning"
+                )
+                return ref
+            new = '${' + (f"{view}." if view else '') + f"{group}[{timeframe}]" + '}'
+            item = f"`{ref}` → `{new}`"
+            if item not in rewrites:
+                rewrites.append(item)
+                changes.append(f"Timeframe reference rewritten: {item}")
+            return new
+
+        out = re.sub(r'\$\{(?:(' + _IDENT + r')\.)?(' + _IDENT + r')\}', _rewrite, sql)
+        if problems:
+            warnings.extend(f"{MANUAL}: {problem}" for problem in dict.fromkeys(problems))
+            return None
+        return out
+
     def extract_dependencies(self, sql: str) -> Set[str]:
-        """Same-view `${field}` references (excluding ${TABLE})"""
+        """Same-view `${field}` and `${field[timeframe]}` references (excluding ${TABLE})"""
         dependencies = set()
-        for match in re.finditer(r'\$\{(' + _IDENT + r')\}', sql or ''):
+        for match in re.finditer(r'\$\{(' + _IDENT + r')' + _TIMEFRAME_SUFFIX + r'\}', sql or ''):
             if match.group(1) != 'TABLE':
                 dependencies.add(match.group(1))
         return dependencies
 
     def extract_cross_view_references(self, sql: str) -> Set[str]:
-        """Cross-view `${view.field}` references, returned as 'view.field'"""
+        """Cross-view `${view.field}` and `${view.field[timeframe]}` references, returned as 'view.field'"""
         refs = set()
-        for match in re.finditer(r'\$\{(' + _IDENT + r')\.(' + _IDENT + r')\}', sql or ''):
+        for match in re.finditer(r'\$\{(' + _IDENT + r')\.(' + _IDENT + r')' + _TIMEFRAME_SUFFIX + r'\}', sql or ''):
             if match.group(1) != 'TABLE':
                 refs.add(f"{match.group(1)}.{match.group(2)}")
         return refs
@@ -620,6 +837,17 @@ class RuleApplier:
             return risk_level
         return "MEDIUM" if risk_level == "LOW" else risk_level
 
+    @staticmethod
+    def _apply_convert_tz(looker_field: Dict, kwargs: Dict, changes: List[str]):
+        """
+        Looker `convert_tz: no` -> Omni `convert_tz: false` (the field keeps
+        the database timezone, with no conversion). `yes`, Looker's default,
+        is also Omni's default and writes nothing.
+        """
+        if str(looker_field.get('convert_tz', 'yes')).lower() == 'no':
+            kwargs['convert_tz'] = False
+            changes.append("convert_tz: no → convert_tz: false (database timezone, no conversion)")
+
     def resolve_field_type(self, field_ref: str) -> Optional[str]:
         """Looker type of a filtered field (same-view name or view.field), None if unknown"""
         if '.' in field_ref:
@@ -628,6 +856,48 @@ class RuleApplier:
                 return self.type_resolver(view, name) if self.type_resolver else None
             field_ref = name
         return self.field_types.get(field_ref)
+
+    def _translate_liquid(
+        self,
+        sql: str,
+        changes: List[str],
+        warnings: List[str]
+    ) -> Tuple[Optional[str], Optional[LiquidTranslation]]:
+        """
+        Translate the Liquid of a field's sql to Omni Mustache
+
+        Returns:
+            (sql, translation): the sql unchanged and None when it holds no
+            Liquid. (None, translation) when a construct cannot be
+            translated: the reason, naming each construct, is added to
+            `warnings` and the field must not be written.
+        """
+        if not has_liquid(sql):
+            return sql, None
+        translation = translate_liquid(sql, self.liquid_context)
+        if translation.sql is None:
+            warnings.append(f"{MANUAL}: {translation.reason}")
+            return None, translation
+        changes.extend(f"Liquid translated: {item}" for item in translation.translated)
+        return translation.sql, translation
+
+    def _liquid_references(
+        self,
+        translation: Optional[LiquidTranslation],
+        dependencies: Set[str],
+        cross_view_refs: Set[str]
+    ):
+        """
+        Record the fields a translated block names in its tokens: the
+        dimensions and measures of the view as dependencies, the fields of
+        other views as cross-view references. The view's own filter-only
+        fields are always written and need no entry here.
+        """
+        for target in (translation.fields if translation else []):
+            if not target.local:
+                cross_view_refs.add(target.token)
+            elif target.kind not in ('parameter', 'filter'):
+                dependencies.add(target.name)
 
     def _dropped_params(self, looker_field: Dict) -> List[str]:
         return [p for p in DROPPED_FIELD_PARAMS if looker_field.get(p)]
@@ -762,9 +1032,11 @@ class RuleApplier:
                 return self._failed(changes, warnings, dropped=dropped)
 
         # Looker defaults sql to ${TABLE}.<field name>
-        sql_raw = looker_dim.get('sql') or '${TABLE}.' + field_name
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(looker_dim.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         db_column_name = self.extract_db_column_name(sql_raw, field_name)
@@ -781,6 +1053,8 @@ class RuleApplier:
 
         dependencies = self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
 
         label = looker_dim.get('label', field_name.replace('_', ' ').title())
         label_mapped, label_mapping_changes = self.apply_canonical_mapping(label)
@@ -812,6 +1086,8 @@ class RuleApplier:
             changes.append("Marked as hidden: true")
         if looker_dim.get('group_label'):
             dim_kwargs['group_label'] = looker_dim['group_label']
+        if dim_type in TZ_DIMENSION_TYPES:
+            self._apply_convert_tz(looker_dim, dim_kwargs, changes)
         risk_level = self._apply_format(looker_dim, dim_kwargs, changes, warnings, risk_level)
         if 'ai_context' in metadata:
             dim_kwargs['ai_context'] = metadata['ai_context']
@@ -836,7 +1112,9 @@ class RuleApplier:
             risk_level=risk_level,
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
-            dropped_params=dropped
+            dropped_params=dropped,
+            liquid=liquid,
+            timeframes=rewritten_timeframes
         )
 
     def convert_measure(
@@ -879,8 +1157,11 @@ class RuleApplier:
                 return self._failed(changes, warnings, dropped=dropped)
             sql_raw = '${' + list_field + '}'
 
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(sql_raw, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         if sql_raw:
@@ -905,6 +1186,8 @@ class RuleApplier:
 
         dependencies = self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
 
         label = looker_measure.get('label', field_name.replace('_', ' ').title())
         label_mapped, label_changes = self.apply_canonical_mapping(label)
@@ -985,7 +1268,9 @@ class RuleApplier:
             dependencies=dependencies,
             risk_level=risk_level,
             cross_view_refs=cross_view_refs,
-            dropped_params=dropped
+            dropped_params=dropped,
+            liquid=liquid,
+            timeframes=rewritten_timeframes
         )
 
     def convert_dimension_group(
@@ -1028,19 +1313,17 @@ class RuleApplier:
                 f"{MANUAL}: dimension_group datatype '{datatype}' needs an explicit conversion to a date/timestamp"
             )
             return self._failed(changes, warnings, dropped=dropped)
-        if str(looker_dim_group.get('convert_tz', 'yes')).lower() == 'no':
-            warnings.append(
-                f"{MANUAL}: dimension_group has convert_tz: no; check Omni's timezone handling for this field"
-            )
-            return self._failed(changes, warnings, dropped=dropped)
         for param in ('sql_date', 'sql_start', 'sql_end'):
             if looker_dim_group.get(param):
                 warnings.append(f"{MANUAL}: dimension_group uses {param}, which is not converted automatically")
                 return self._failed(changes, warnings, dropped=dropped)
 
-        sql_raw = looker_dim_group.get('sql') or '${TABLE}.' + field_name
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(
+            looker_dim_group.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         try:
@@ -1061,6 +1344,8 @@ class RuleApplier:
 
         dependencies = set() if is_standard_sql else self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
         db_column_name = self.extract_db_column_name(sql_raw, field_name)
 
         looker_label = looker_dim_group.get('label')
@@ -1087,6 +1372,7 @@ class RuleApplier:
             changes.append("Marked as hidden: true")
         if looker_dim_group.get('group_label'):
             dim_kwargs['group_label'] = looker_dim_group['group_label']
+        self._apply_convert_tz(looker_dim_group, dim_kwargs, changes)
         if self.canonical_synonyms(field_name):
             dim_kwargs['synonyms'] = self.canonical_synonyms(field_name)
 
@@ -1113,5 +1399,151 @@ class RuleApplier:
             risk_level=risk_level,
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
+            dropped_params=dropped,
+            liquid=liquid,
+            timeframes=rewritten_timeframes
+        )
+
+    def convert_filter_field(
+        self,
+        field_name: str,
+        looker_field: Dict,
+        kind: str,
+        omni_type: Optional[str] = None
+    ) -> ConversionResult:
+        """
+        Convert a Looker `filter:` or `parameter:` to an Omni filter-only field
+
+        Looker:
+          parameter: metric {
+            type: string
+            allowed_value: { label: "Revenue" value: "revenue" }
+            default_value: "revenue"
+          }
+
+        Omni (under the view's `filters:` key):
+          metric:
+            type: string
+            suggestion_list:
+              - value: revenue
+                label: Revenue
+            default_filter:
+              is: revenue
+            filter_single_select_only: true
+
+        Args:
+            kind: 'filter' or 'parameter'
+            omni_type: Omni type of a `type: unquoted` parameter ('column'
+                when the SQL uses it as an identifier, else 'string')
+        """
+        changes: List[str] = []
+        warnings: List[str] = []
+        risk_level = "LOW"
+
+        def review(note: str):
+            nonlocal risk_level
+            warnings.append(note)
+            risk_level = "MEDIUM"
+
+        looker_type = looker_field.get('type') or 'string'
+        if kind == 'filter' and looker_field.get('sql'):
+            warnings.append(
+                f"{MANUAL}: the filter has `sql:`, a condition Looker adds to the query when the filter is used. "
+                f"A filter-only field has no such parameter in Omni"
+            )
+            return self._failed(changes, warnings)
+        if kind == 'parameter' and looker_type == 'unquoted':
+            filter_type = omni_type or 'string'
+            changes.append(f"Mapped type: unquoted → {filter_type}")
+        else:
+            filter_type = FILTER_TYPE_MAP.get(looker_type)
+            if filter_type is None:
+                warnings.append(f"{MANUAL}: {kind} type '{looker_type}' has no Omni filter-only field type")
+                return self._failed(changes, warnings)
+            if filter_type != looker_type:
+                changes.append(f"Mapped type: {looker_type} → {filter_type}")
+
+        kwargs: Dict[str, Any] = {'type': filter_type}
+        for key in ('label', 'description', 'group_label'):
+            value = looker_field.get(key)
+            if not value:
+                continue
+            if has_liquid(value):
+                review(f"`{key}` uses Liquid and was not migrated")
+                continue
+            if key == 'label':
+                value, mapping_changes = self.apply_canonical_mapping(value)
+                changes.extend(mapping_changes)
+            kwargs[key] = value
+
+        def typed(value: Any) -> Any:
+            """A Looker value in the YAML type of the filter"""
+            text = str(value).strip()
+            if filter_type == 'number' and re.fullmatch(_SIGNED_NUMBER, text):
+                return _number(text)
+            if filter_type == 'boolean' and text.lower() in ('yes', 'no', 'true', 'false'):
+                return text.lower() in ('yes', 'true')
+            return value
+
+        suggestions = []
+        for allowed in looker_field.get('allowed_values') or []:
+            if not isinstance(allowed, dict) or allowed.get('value') is None:
+                continue
+            item = {'value': typed(allowed['value'])}
+            if allowed.get('label'):
+                item['label'] = allowed['label']
+            suggestions.append(item)
+        for value in looker_field.get('suggestions') or []:
+            suggestions.append({'value': typed(value)})
+        if suggestions:
+            kwargs['suggestion_list'] = suggestions
+            changes.append(f"allowed values → suggestion_list ({len(suggestions)} value(s))")
+
+        suggest_dimension = looker_field.get('suggest_dimension')
+        if suggest_dimension:
+            if '.' not in suggest_dimension and self.view_name:
+                suggest_dimension = f"{self.view_name}.{suggest_dimension}"
+            kwargs['suggest_from_field'] = suggest_dimension
+            changes.append(f"suggest_dimension → suggest_from_field: {suggest_dimension}")
+
+        default = looker_field.get('default_value')
+        if default is not None and str(default).strip():
+            condition = None
+            if filter_type == 'timestamp':
+                pass  # a Looker date expression: no confirmed Omni form
+            elif kind == 'parameter':
+                condition = {'is': typed(default)}
+            else:
+                condition = translate_filter_expression(default, filter_kind(looker_type))
+            if condition is None:
+                review(f"default_value \"{default}\" not migrated; set `default_filter` by hand")
+            else:
+                kwargs['default_filter'] = condition
+                changes.append("default_value → default_filter")
+
+        if kind == 'parameter':
+            # A Looker parameter holds exactly one value
+            kwargs['filter_single_select_only'] = True
+        if looker_field.get('hidden') == 'yes':
+            kwargs['hidden'] = True
+            changes.append("Marked as hidden: true")
+
+        handled = {'name', 'type', 'label', 'description', 'group_label', 'allowed_values', 'suggestions',
+                   'suggest_dimension', 'default_value', 'hidden', 'sql'}
+        dropped = sorted(key for key in looker_field if key not in handled)
+        for key in dropped:
+            changes.append(f"Not migrated: {key}")
+
+        try:
+            omni_filter = OmniFilter(**kwargs)
+        except Exception as e:
+            warnings.append(f"Validation error: {e}")
+            return self._failed(changes, warnings, dropped=dropped)
+        return ConversionResult(
+            omni_field=omni_filter,
+            changes=changes,
+            warnings=warnings,
+            dependencies=set(),
+            risk_level=risk_level,
             dropped_params=dropped
         )
