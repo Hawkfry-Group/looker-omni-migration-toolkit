@@ -69,6 +69,33 @@ dimensions:
 
 Raw SQL goes under `sql:`. A structured `query:` block is only for native Omni queries; see [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
 
+### 2.3 Template views and `extends`
+
+```yaml
+# base_entity.view.yaml: a template has no schema and no table_name
+folder: analytics/curated
+label: Base Entity
+tags: [base, fact, mig_phase_0, verified]
+template: true
+
+dimensions:
+  id:
+    primary_key: true
+    tags: [id, mig_phase_0, verified]
+```
+
+```yaml
+# orders.view.yaml
+schema: shop
+table_name: orders
+extends: [base_entity, audit_fields]
+```
+
+- `template: true` marks a view that only exists to be extended. It has no `schema` and no source (`table_name`, `sql`, `query`).
+- `extends:` is a list. The extending view inherits the fields of the listed views and overrides them with its own.
+- When two views in `extends:` define the same field, Omni uses the FIRST one in the list. Looker uses the last. The migrator keeps the Looker order and writes any field the parents disagree on into the extending view, tagged `resolved_from_extends`.
+- A field of the extending view may reference an inherited field with `${field}`.
+
 ## 3. View-level metadata
 
 | Key | Content |

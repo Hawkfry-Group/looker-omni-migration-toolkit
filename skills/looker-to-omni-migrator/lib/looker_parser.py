@@ -96,6 +96,13 @@ if looker_view.access_filters:
 3. **Flag Advanced Features**: Detects features needing special handling
 4. **Pass to Rule Applier**: Provides structured data for conversion
 
+## Repository index and `extends`
+
+`load_views` parses every view of the repository once. `resolve_view_extends`
+resolves a view's `extends:` chain against that index (chains, shared
+grandparents, cycles) and `effective_view` returns the view as Looker sees it
+after inheritance.
+
 ## LookML Parsing
 
 Uses the `lkml` library to parse LookML:
@@ -106,8 +113,9 @@ Uses the `lkml` library to parse LookML:
 
 import os
 import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import lkml
 
 
@@ -497,3 +505,292 @@ def find_and_parse_view(looker_repo: str, view_name: str) -> LookerView:
     view = parse_looker_view(file_path, target_view_name=view_name)
     _, view.refinement_files = find_view_definitions(looker_repo, view_name)
     return view
+
+
+# ----------------------------------------------------------------------
+# Repository index (every view, parsed once)
+# ----------------------------------------------------------------------
+
+_VIEW_RE = re.compile(r'\bview\s*:')
+
+
+def load_views(looker_repo: str) -> Tuple[Dict[str, List[LookerView]], Dict[str, List[str]]]:
+    """
+    Parse every view under the repository, reading each `*.lkml` file once
+
+    Returns:
+        (definitions, refinements): view name -> its definitions (more than
+        one file means the name is declared twice), and view name -> files
+        holding a refinement of it (`view: +name`)
+    """
+    definitions: Dict[str, List[LookerView]] = {}
+    refinements: Dict[str, List[str]] = {}
+    for lkml_file in sorted(Path(looker_repo).rglob("*.lkml")):
+        try:
+            text = lkml_file.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not _VIEW_RE.search(text):
+            continue
+        try:
+            parsed = lkml.load(text)
+        except Exception as e:
+            print(f"Warning: could not parse {lkml_file}: {e}")
+            continue
+        file_comment: Optional[str] = None
+        for view_dict in parsed.get('views', []):
+            name = view_dict.get('name', '')
+            if name.startswith('+'):
+                refinements.setdefault(name[1:], []).append(str(lkml_file))
+                continue
+            if file_comment is None:
+                file_comment = extract_file_comment(str(lkml_file))
+            definitions.setdefault(name, []).append(LookerView(str(lkml_file), view_dict, file_comment=file_comment))
+    for name, files in refinements.items():
+        for view in definitions.get(name, []):
+            view.refinement_files = list(files)
+    return definitions, refinements
+
+
+def view_from_index(
+    definitions: Dict[str, List[LookerView]],
+    looker_repo: str,
+    view_name: str
+) -> LookerView:
+    """
+    The single definition of a view in a `load_views` index
+
+    Raises the same errors as `find_and_parse_view`: FileNotFoundError when
+    the view is not defined, ValueError when more than one file defines it.
+    """
+    found = definitions.get(view_name, [])
+    files = sorted({view.file_path for view in found})
+    if len(files) > 1:
+        raise ValueError(
+            f"View '{view_name}' is defined in more than one file: {', '.join(files)}. "
+            f"Point --looker-repo at a single project."
+        )
+    if not found:
+        raise FileNotFoundError(
+            f"Looker view '{view_name}' not found in {looker_repo} "
+            f"(searched every *.lkml file recursively)"
+        )
+    return found[0]
+
+
+# ----------------------------------------------------------------------
+# View inheritance (extends)
+# ----------------------------------------------------------------------
+
+# (field kind, key of the parsed view that lists the fields of that kind)
+FIELD_KINDS = (
+    ('dimension', 'dimensions'),
+    ('dimension_group', 'dimension_groups'),
+    ('measure', 'measures'),
+)
+
+
+@dataclass
+class InheritedField:
+    """A field a view receives through `extends:`"""
+    kind: str  # dimension, dimension_group or measure
+    data: Dict[str, Any]  # the definition Looker uses (parameters merged along the chain)
+    origin: str  # view whose definition was applied last
+    via: str  # direct parent it arrives through (the last one when several supply it)
+    # Direct parents that supply DIFFERENT definitions, in `extends:` order.
+    # Looker uses the last one, Omni the first. Empty when there is no conflict.
+    conflict: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ViewSource:
+    """Where a view reads its rows from, and the view that declares it"""
+    origin: str
+    sql_table_name: Optional[str] = None
+    derived_table: Optional[Dict] = None
+
+
+@dataclass
+class ViewExtendsResolution:
+    """Result of resolving a view's `extends:` chain"""
+    view_name: str
+    parents: List[str] = field(default_factory=list)  # as declared, in order
+    ancestors: List[str] = field(default_factory=list)  # every view of the chain, each after its own parents
+    problem: Optional[str] = None  # why the chain could not be resolved
+    fields: Dict[str, InheritedField] = field(default_factory=dict)  # inherited, before the view's own fields
+    source: Optional[ViewSource] = None  # inherited table or derived table, if any parent declares one
+
+    @property
+    def conflicts(self) -> Dict[str, InheritedField]:
+        """Inherited fields that two parents define differently"""
+        return {name: inherited for name, inherited in self.fields.items() if inherited.conflict}
+
+
+@dataclass
+class _ViewChain:
+    inherited: Dict[str, InheritedField]
+    fields: Dict[str, InheritedField]  # inherited plus the view's own
+    ancestors: List[str]
+    inherited_source: Optional[ViewSource]
+    source: Optional[ViewSource]
+
+
+class _UnresolvedExtends(Exception):
+    pass
+
+
+def own_fields(view: LookerView) -> Dict[str, Tuple[str, Dict]]:
+    """{field name: (kind, definition)} for the fields declared in the view itself"""
+    kinds = {'dimension': view.dimensions, 'dimension_group': view.dimension_groups, 'measure': view.measures}
+    return {name: (kind, data) for kind, fields in kinds.items() for name, data in fields.items()}
+
+
+def _build_chain(
+    view: LookerView,
+    definitions: Dict[str, List[LookerView]],
+    cache: Dict[str, Any],
+    path: Tuple[str, ...]
+) -> _ViewChain:
+    name = view.view_name
+    inherited: Dict[str, InheritedField] = {}
+    ancestors: List[str] = []
+    inherited_source: Optional[ViewSource] = None
+
+    for parent_name in view.extends:
+        if parent_name == name or parent_name in path:
+            raise _UnresolvedExtends("circular extends: " + ' → '.join(path + (name, parent_name)))
+        candidates = definitions.get(parent_name, [])
+        files = sorted({candidate.file_path for candidate in candidates})
+        if not candidates:
+            raise _UnresolvedExtends(f"view `{parent_name}` was not found under --looker-repo")
+        if len(files) > 1:
+            raise _UnresolvedExtends(f"view `{parent_name}` is defined more than once ({', '.join(files)})")
+        parent = _chain(candidates[0], definitions, cache, path + (name,))
+        for ancestor in parent.ancestors + [parent_name]:
+            if ancestor not in ancestors:
+                ancestors.append(ancestor)
+        for field_name, supplied in parent.fields.items():
+            previous = inherited.get(field_name)
+            if previous is None:
+                inherited[field_name] = replace(supplied, via=parent_name, conflict=[])
+            elif previous.kind != supplied.kind:
+                raise _UnresolvedExtends(
+                    f"`{field_name}` is a {previous.kind} in `{previous.via}` and a {supplied.kind} in "
+                    f"`{parent_name}`"
+                )
+            elif previous.data != supplied.data:
+                # Looker merges parameter by parameter, the later parent winning
+                inherited[field_name] = InheritedField(
+                    kind=supplied.kind,
+                    data={**previous.data, **supplied.data},
+                    origin=supplied.origin,
+                    via=parent_name,
+                    conflict=(previous.conflict or [previous.via]) + [parent_name]
+                )
+        if parent.source is not None:
+            inherited_source = parent.source
+
+    fields = {field_name: replace(supplied, conflict=[]) for field_name, supplied in inherited.items()}
+    for field_name, (kind, data) in own_fields(view).items():
+        previous = inherited.get(field_name)
+        if previous is not None and previous.kind != kind:
+            raise _UnresolvedExtends(
+                f"`{field_name}` is a {previous.kind} in `{previous.via}` and a {kind} in `{name}`"
+            )
+        merged = {**previous.data, **data} if previous is not None else data
+        fields[field_name] = InheritedField(kind=kind, data=merged, origin=name, via=name)
+
+    source = inherited_source
+    if view.sql_table_name or view.derived_table:
+        source = ViewSource(origin=name, sql_table_name=view.sql_table_name, derived_table=view.derived_table)
+    return _ViewChain(inherited, fields, ancestors, inherited_source, source)
+
+
+def _chain(
+    view: LookerView,
+    definitions: Dict[str, List[LookerView]],
+    cache: Dict[str, Any],
+    path: Tuple[str, ...]
+) -> _ViewChain:
+    """`_build_chain`, computed once per view (a failure is remembered too)"""
+    cached = cache.get(view.view_name)
+    if isinstance(cached, _UnresolvedExtends):
+        raise cached
+    if cached is not None:
+        return cached
+    try:
+        chain = _build_chain(view, definitions, cache, path)
+    except _UnresolvedExtends as e:
+        cache[view.view_name] = e
+        raise
+    cache[view.view_name] = chain
+    return chain
+
+
+def resolve_view_extends(
+    view: LookerView,
+    definitions: Dict[str, List[LookerView]],
+    cache: Optional[Dict[str, Any]] = None
+) -> ViewExtendsResolution:
+    """
+    Resolve everything a view inherits through `extends:`
+
+    Parents are applied in list order (a later parent wins over an earlier
+    one, parameter by parameter), each parent after its own chain. Views
+    shared by several branches (diamonds) are resolved once. `definitions`
+    comes from `load_views`; pass the same `cache` dict to every call of a
+    run so each view of the repository is resolved once.
+
+    A field that reaches the view through two parents with different
+    definitions is a conflict (`InheritedField.conflict`): Looker uses the
+    last parent, Omni the first. The same definition arriving twice (a
+    shared grandparent) is not a conflict.
+
+    When a parent is missing, declared more than once, the chain is
+    circular, or a name is a different kind of field on two sides,
+    `problem` says why and nothing is inherited.
+    """
+    resolution = ViewExtendsResolution(view_name=view.view_name, parents=list(view.extends))
+    if not view.extends:
+        return resolution
+    try:
+        chain = _chain(view, definitions, cache if cache is not None else {}, ())
+    except _UnresolvedExtends as e:
+        resolution.problem = str(e)
+        return resolution
+    resolution.ancestors = list(chain.ancestors)
+    resolution.fields = dict(chain.inherited)
+    resolution.source = chain.inherited_source
+    return resolution
+
+
+def effective_view(
+    view: LookerView,
+    resolution: ViewExtendsResolution,
+    include_inherited: bool = False
+) -> LookerView:
+    """
+    The view as Looker sees it after `extends:`
+
+    The view's own fields get the parameters they inherit (a partial
+    override such as `dimension: id { hidden: yes }` keeps the parent's
+    `sql`), and the fields two parents define differently are added with the
+    definition Looker uses. With `include_inherited` every inherited field
+    is added, which gives the full field list of the view.
+    """
+    own = own_fields(view)
+    data = dict(view.data)
+    for kind, key in FIELD_KINDS:
+        fields = []
+        for name, (own_kind, own_data) in own.items():
+            if own_kind != kind:
+                continue
+            inherited = resolution.fields.get(name)
+            fields.append({**inherited.data, **own_data} if inherited is not None else own_data)
+        for name, inherited in resolution.fields.items():
+            if inherited.kind == kind and name not in own and (include_inherited or inherited.conflict):
+                fields.append(inherited.data)
+        data[key] = fields
+    merged = LookerView(view.file_path, data, file_comment=view.file_comment)
+    merged.refinement_files = list(view.refinement_files)
+    return merged

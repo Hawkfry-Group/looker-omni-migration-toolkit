@@ -193,30 +193,32 @@ class OmniView(BaseModel):
     """
     Omni view definition
 
-    Supports three types:
+    Supports four types:
     1. Standard table view: uses table_name
     2. SQL derived table: uses sql
     3. Native derived table: uses query (from Looker explore_source)
+    4. Template view (`template: true`): no schema and no source; other
+       views extend it and supply the table
 
     File extension: .view.yaml or .query.view
     """
     # Stored as `schema_` because `schema` shadows a BaseModel attribute;
     # it is read and written as `schema` via the alias.
-    schema_: str = Field(..., alias="schema", description="Schema name (e.g., thelook_ecommerce)")
+    schema_: Optional[str] = Field(None, alias="schema", description="Schema name (e.g., thelook_ecommerce); not set on a template view")
     catalog: Optional[str] = Field(None, description="Database/project when the connection spans several (3-part table names)")
     folder: str = Field(..., description="Folder path (e.g., thelook_ecommerce/curated)")
     label: str = Field(..., description="Human-friendly view label")
     description: str = Field(..., description="Concise view description")
     tags: List[str] = Field(..., description="View-level tags")
 
-    # EXACTLY ONE of these three must be present:
+    # EXACTLY ONE of these three must be present (none on a template view):
     table_name: Optional[str] = Field(None, description="Base table name (for standard views)")
     sql: Optional[str] = Field(None, description="Raw SQL query (for SQL derived tables)")
     query: Optional[OmniQuery] = Field(None, description="Query definition (for native derived tables)")
 
     # Optional view-level fields
     ai_context: Optional[str] = None
-    extends: Optional[str] = Field(None, description="View to extend from")
+    extends: Optional[List[str]] = Field(None, description="Views to extend, in order (the first wins a conflict in Omni)")
     template: Optional[bool] = Field(None, description="True if this is a template view (abstract)")
 
     # Fields
@@ -226,7 +228,7 @@ class OmniView(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @property
-    def schema_name(self) -> str:
+    def schema_name(self) -> Optional[str]:
         """Warehouse schema of the view"""
         return self.schema_
 
@@ -249,13 +251,16 @@ class OmniView(BaseModel):
 
     @model_validator(mode='after')
     def validate_table_or_sql_or_query(self):
-        """Ensure exactly one of table_name, sql, or query is present"""
-        table_name = self.table_name
-        sql = self.sql
-        query = self.query
+        """Exactly one of table_name, sql or query, with a schema; a template view has none of them"""
+        non_none = [s for s in (self.table_name, self.sql, self.query) if s is not None]
 
-        sources = [table_name, sql, query]
-        non_none = [s for s in sources if s is not None]
+        if self.template:
+            if non_none or self.schema_ is not None or self.catalog is not None:
+                raise ValueError("A template view cannot have schema, catalog, table_name, sql or query")
+            return self
+
+        if self.schema_ is None:
+            raise ValueError("View must have a schema")
 
         if len(non_none) == 0:
             raise ValueError("View must have exactly one of: table_name, sql, or query")

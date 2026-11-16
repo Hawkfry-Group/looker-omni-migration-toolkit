@@ -31,6 +31,10 @@ for view in users products inventory_items; do
 done
 ```
 
+### Views that extend other views
+
+`--view child` resolves `extends:` across every `.lkml` file under `--looker-repo` and writes `extends: [parent]` on the Omni view. Inherited fields stay in the parent views, so migrate each view of the chain (the report lists them), templates included: a view with `extension: required` becomes a view with `template: true` and no table. List a field in the CSV under the view that defines it; a row for an inherited field under the child writes nothing. A view with no fields of its own needs no CSV rows.
+
 ### Phases
 
 Run the same view again for a later phase and it merges into the existing output. Fields migrated in earlier phases stay visible; the new phase's fields become visible and are tagged with their phase.
@@ -172,6 +176,7 @@ Review the files, copy them into your Omni model on a branch, validate in Omni, 
 
 ## Tips
 
+- If view A extends view B, migrate both: A's file only refers to B in `extends:`.
 - If explore A extends explore B, migrate both: A's topic carries the merged joins and settings and refers to B's topic in `extends:`.
 - Start with small explores to prove the approach.
 - Use `--unverified` for drafts; re-run without it once reviewed.

@@ -86,7 +86,8 @@ python scripts/migrate.py --view users --phase 1 --owner "Team A" \
 
 | Symptom | Cause |
 |---------|-------|
-| `No CSV rows found` | Owner differs in case or spacing; phase does not match; view name differs from the LookML |
+| `No CSV rows found` | Owner differs in case or spacing; phase does not match; view name differs from the LookML. Views with no fields of their own, and template views, convert without rows |
+| A row for an inherited field is reported | The field is defined in a parent view (`extends:`). List it under that parent view |
 | A field is hidden | It is not in scope for this phase and owner |
 | A field you did not list is visible | An in-scope field references it; see `auto_dependency` in the report |
 | A field you listed is missing | It could not be converted; see Notes / Risks in the report |

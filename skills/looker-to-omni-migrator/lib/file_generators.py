@@ -545,9 +545,11 @@ class FileGenerator:
         stats['existing_dims'] = len(_as_dict(existing_view.get('dimensions')))
         stats['existing_measures'] = len(_as_dict(existing_view.get('measures')))
 
+        is_template = new_view.get('template') is True
+
         # A catalog the LookML does not name could point the view at another
         # database: never keep or drop it silently
-        if existing_view.get('catalog') and not new_view.get('catalog'):
+        if existing_view.get('catalog') and not new_view.get('catalog') and not is_template:
             raise MergeError(
                 f"the existing view sets catalog `{existing_view['catalog']}` but the Looker source has no "
                 f"catalog/project. Keeping it or removing it could query a different database: resolve the "
@@ -566,6 +568,21 @@ class FileGenerator:
                 if key not in new_sources and key in merged:
                     notes.append(f"Removed existing `{key}`: the LookML view uses `{new_sources[0]}`")
                     del merged[key]
+
+        # Inheritance comes from LookML: `extends` and `template` follow it
+        if is_template:
+            merged['template'] = True
+            for key in _SOURCE_KEYS + ('schema', 'catalog'):
+                if key in merged:
+                    notes.append(f"Removed existing `{key}`: the LookML view is a template (`template: true`)")
+                    del merged[key]
+        elif 'template' in merged:
+            notes.append("Removed existing `template`: the LookML view is not a template")
+            del merged['template']
+        if new_view.get('extends'):
+            if 'extends' in existing_view and existing_view['extends'] != new_view['extends']:
+                notes.append("Replaced existing `extends` with the value generated from LookML")
+            merged['extends'] = new_view['extends']
 
         if new_view.get('ai_context'):
             merged['ai_context'] = new_view['ai_context']
@@ -697,7 +714,7 @@ class FileGenerator:
             view_dict['sql'] = LiteralScalarString(formatted_sql)
 
         view_dict = self._add_yaml_spacing(view_dict)
-        view_dict = self._format_tags_inline(view_dict)
+        view_dict = self._format_tags_inline(view_dict, keys=('tags', 'required_access_grants', 'extends'))
 
         for section in ('dimensions', 'measures'):
             for field_data in (view_dict.get(section) or {}).values():

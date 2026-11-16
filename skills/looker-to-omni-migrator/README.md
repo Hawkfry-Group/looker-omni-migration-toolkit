@@ -95,6 +95,8 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | `${field}`, `${view.field}` | unchanged |
 | `derived_table: { sql: ... }` | `{view}.query.view` with `sql:` |
 | `derived_table: { explore_source: ... }` | `{view}.query.view` with `query:` |
+| view `extends: [a, b]` | view `extends: [a, b]`; a field the parents define differently is written into the child (Looker: last parent wins, Omni: first) and tagged `resolved_from_extends` |
+| view `extension: required`, or a view with no table that is only extended | view `template: true`, without `schema` and `table_name` |
 | explore `join` | topic join plus an entry under the topic's `relationships:` |
 | explore `access_filter`, `sql_always_where`, `sql_always_having` | topic `access_filters`, `always_where_sql`, `always_having_sql` |
 | explore `always_filter` (`N days ago for N days`, string values, a number) | topic `default_filters` entry with `required: true`; other expressions are reported |
@@ -119,6 +121,7 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - Relationships are written topic-scoped. With `--relationships-file` they are model-wide in Omni, so separate `.relationships` files can conflict.
 - `always_filter` is translated for a small set of expressions only; named periods such as `last month`, and `N days`, are reported. `conditionally_filter` is reported only.
 - An extending topic needs its parent topic in the Omni model: migrate the parent explores too.
+- An extending view needs its parent views in the Omni model: migrate every view of the chain. Inherited fields are not copied, so their visibility follows the parent view's CSV scope.
 - Explore mode does not rewrite join SQL for fields renamed by a merge.
 - The CSV `omni_view` / `omni_field` columns are tracking only.
 - References to Looker timeframe fields (for example `${created_date}`) are reported, not rewritten.

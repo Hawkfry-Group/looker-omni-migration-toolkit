@@ -53,7 +53,7 @@ A Looker `hidden: yes` is kept, even on in-scope and auto-included fields.
 - Views, explores and access grants are found in **any** `*.lkml` file under `--looker-repo`, at any depth, including model files.
 - A view, explore or grant name defined more than once stops the run (exit 1) with the file locations.
 - Refinements (`view: +name`, `explore: +name`) are detected and reported, not applied.
-- `extends:` is reported; inherited fields are not included.
+- View `extends:` is resolved across the whole repo and written to the Omni view; see "View inheritance". If a parent cannot be found it is reported and inherited fields are not included.
 - Model `include:` statements are ignored.
 
 ---
@@ -125,6 +125,39 @@ dimensions:
     sql: COALESCE(sale_price, 0)
     format: usdcurrency_2
 ```
+
+## View inheritance (`extends`) and template views
+
+### Template views
+
+- A view with `extension: required` becomes an Omni view with `template: true`, with no `schema` and no `table_name`. A template view cannot be queried on its own; other views extend it and supply the table.
+- A view is also treated as a template when it has no `sql_table_name` and no `derived_table`, at least one other view under `--looker-repo` extends it, and no explore under `--looker-repo` uses it as its base or as a join target (explore `extends` chains are resolved for this check). The report states the reason ("Template View" under Advanced Features, and the View File Decision).
+- A template's fields are converted as usual. It has no table, so `${TABLE}.col` becomes the raw column `col` and the extending view's table supplies it. The "no sql_table_name, using the view name as table" item is not reported for a template.
+- A template that declares a `sql_table_name` or `derived_table` of its own does not keep it; each extending view that declares no source gets the inherited one written explicitly (reported as "Inherited View Source").
+
+### `extends` on views
+
+- The parent chain is resolved across every `.lkml` file under `--looker-repo`: parents can extend other views, and a view several branches share is resolved once. The Omni view gets `extends: [a, b, c]` in the Looker order.
+- Inherited fields stay in the parent views. They are not copied into the child, so migrate every view of the chain (the report lists them).
+- **Conflicts.** Looker gives priority to the LAST view in `extends:`; Omni gives it to the FIRST. When two parents supply different definitions of the same field, the definition Looker uses (the parents merged parameter by parameter, the later one winning) is converted and written into the child, tagged `resolved_from_extends`, and listed in the report under "Extends Conflict". Like any other field it is visible when it is in the CSV scope or an in-scope field depends on it, and hidden otherwise. The same definition arriving twice through a shared grandparent is not a conflict, and nothing is written for a field only one parent defines.
+- A field the child declares itself overrides all parents. When it sets only some parameters (for example `dimension: id { hidden: yes }`), the parameters it leaves out come from the inherited definition, as in Looker, and the complete field is written in the child.
+- If a parent is missing, defined in more than one file, the chain is circular, or a name is a dimension on one side and a measure on the other, nothing is resolved: `extends:` is not written and the view is reported as before ("inherited fields are not included", with the reason).
+- Also reported as MANUAL ACTION REQUIRED: view-level `required_access_grants` and `access_filter` of a parent (not carried), refinements of a parent (not applied), and a field of the child that cannot be converted while a parent defines the same name (Omni then shows the parent's definition).
+
+### References to inherited fields
+
+- A `${field}` reference, or a measure filter, that names an inherited field follows the same rules as a reference to a field of the view itself. The inherited field is not copied into the child and is not an `auto_dependency`.
+- The reference is only valid when the parent view can migrate that field. Each inherited field is judged in the view that defines it; if it is not convertible there, the dependent field is not written and is reported with the parent's reason.
+- The rule for Looker timeframe fields is unchanged: `${created_date}` is not written, whether the dimension group is the view's own or inherited.
+- In explore mode, an `always_filter` on an inherited field (or on a timeframe of an inherited dimension group) translates like one on a field of the view itself.
+- The "No primary key dimension in the final view" warning is not raised when a view of the chain defines a `primary_key: yes` dimension that converts.
+
+### CSV scope
+
+- A CSV row that names an inherited field is not an error and writes nothing in the child. It is reported ("CSV Fields Inherited Through extends"): whether the field is visible follows the scope of the parent view that defines it, so list it in the CSV under that parent.
+- A view with no fields of its own (it only extends other views and sets a table) converts without any CSV row: the file holds the view header and `extends:`. A template view also converts without CSV rows; its fields are then written hidden, which the extending views inherit, and this is reported.
+
+---
 
 ## Dates (`dimension_group`)
 
@@ -374,7 +407,7 @@ The migrator keeps Looker names (except when a merge folds a field into an exist
 6. **Redundancy Candidates**: hidden dimensions, listed as possible legacy fields
 7. **Not Converted**: hidden out-of-scope fields and fields that could not be written
 8. **Notes / Risks**: HIGH, MEDIUM and INFO entries
-9. **Advanced Features Detected**: access grants, access filters, refinements, `extends`, parameters, derived tables, persistence, each with a status such as `CARRIED - MANUAL ACTION REQUIRED` or `NOT MIGRATED`
+9. **Advanced Features Detected**: access grants, access filters, refinements, `extends` (the chain, conflicts resolved, inherited CSV fields), template views, parameters, derived tables, persistence, each with a status such as `CARRIED - MANUAL ACTION REQUIRED` or `NOT MIGRATED`
 
 ## Never
 

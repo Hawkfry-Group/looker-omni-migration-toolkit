@@ -126,6 +126,70 @@ fulfillment: MANUAL ACTION REQUIRED: dimension_group type 'duration' has no auto
 
 A field that references a timeframe, such as `${created_date}`, is not written; Omni has no field by that name.
 
+## View inheritance
+
+### Template view
+
+```lkml
+view: base_entity {
+  extension: required
+  dimension: id { primary_key: yes type: number sql: ${TABLE}.id ;; }
+  dimension_group: created { type: time sql: ${TABLE}.created_at ;; }
+}
+```
+
+```yaml
+# base_entity.view.yaml (no schema, no table_name)
+template: true
+
+dimensions:
+  id:
+    primary_key: true
+  created:
+    sql: created_at
+```
+
+A view with no `sql_table_name` and no `derived_table` that other views extend, and that no explore uses as its base or a join target, is written the same way.
+
+### Extending view
+
+```lkml
+view: orders {
+  extends: [base_entity, audit_fields]
+  sql_table_name: shop.orders ;;
+  dimension: status_upper { sql: UPPER(${status}) ;; }   # status is inherited
+}
+```
+
+```yaml
+schema: shop
+table_name: orders
+extends: [base_entity, audit_fields]
+
+dimensions:
+  status_upper:
+    sql: UPPER(${status})
+```
+
+Inherited fields are not copied. A reference to one is valid when the parent view migrates that field; otherwise the dependent field is not written:
+
+```
+tier_label: MANUAL ACTION REQUIRED: depends on inherited field price_tier (from view base_entity), which is not migrated (...) - not written
+```
+
+### Parents that disagree
+
+If `base_entity` and `audit_fields` both define `status` with different SQL, Looker uses `audit_fields` (the last parent) and Omni would use `base_entity` (the first). The migrator writes the Looker definition into the child:
+
+```yaml
+dimensions:
+  status:
+    sql: UPPER(status)
+    tags: [mig_phase_0, verified, resolved_from_extends]
+```
+
+Outside the CSV scope the field is written `hidden: true` with the tags `in_omni_in_looker_not_csv` and `resolved_from_extends`.
+
 ## Measures
 
 ### Aggregates

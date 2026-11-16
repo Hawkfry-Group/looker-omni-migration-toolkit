@@ -73,6 +73,13 @@ Notes:
 - A three-part `sql_table_name` adds a `catalog:` key.
 - Generated `label`, `description` and `ai_context` are a starting point; improve them during review.
 
+### Template and extending views
+
+- A template view (Looker `extension: required`, or a view with no table that is only extended) is written as `{view}.view.yaml` with `template: true` and without `schema` and `table_name`.
+- A view that extends others gets `extends: [parent_a, parent_b]` after its source. Inherited fields are not repeated in it. A field its parents define differently is written with the Looker definition and the tag `resolved_from_extends`.
+- A view with no fields of its own is written with its header and `extends:` only.
+- The report's Advanced Features section gains "View Inheritance (extends)" (the chain and the origin of each inherited field), "Template View", "Extends Conflict", "Inherited View Source" and "CSV Fields Inherited Through extends" when they apply.
+
 ### Derived-table view
 
 `{view}.query.view` with either `sql:` (SQL derived table) or `query:` (native derived table). See [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).

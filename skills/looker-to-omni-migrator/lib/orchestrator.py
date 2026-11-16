@@ -22,7 +22,15 @@ as MANUAL ACTION REQUIRED in the report, the console and
 
 1. **Load CSV scope** - rows for this owner, phase and view
 2. **Parse the Looker view** - every CSV field must exist in it; missing
-   fields are reported as MANUAL ACTION REQUIRED
+   fields are reported as MANUAL ACTION REQUIRED. Every view of the repo is
+   parsed once per run (`load_views`). `extends:` is resolved across the
+   repo: the view gets `extends:`, references to inherited fields are valid
+   when the parent view migrates them, and a field two parents define
+   differently is written into the view with the definition Looker uses
+   (tag `resolved_from_extends`). A view with `extension: required`, or one
+   with no table that is only extended, becomes a template (`template: true`,
+   no `schema`, no `table_name`). A parent that cannot be found leaves the
+   view unresolved and reported.
 3. **Convert fields** - every field of the view is converted. In-scope fields
    are written visible; other fields are written `hidden: true` with the tag
    `in_omni_in_looker_not_csv`. Out-of-scope fields referenced by in-scope
@@ -32,8 +40,8 @@ as MANUAL ACTION REQUIRED in the report, the console and
    reported. Field-level `required_access_grants` are copied onto every
    written field.
 4. **Build the Omni view** - table view (`schema`, `table_name`, and
-   `catalog` for 3-part names), SQL derived table (`sql:`) or native derived
-   table (`query:`)
+   `catalog` for 3-part names), SQL derived table (`sql:`), native derived
+   table (`query:`) or template view (no source)
 5. **Generate files** - everything is rendered and validated first, then
    written: `{view}.view.yaml` or `{view}.query.view` in the output dir and
    `{view}.migration.md` in the reports dir
@@ -104,7 +112,16 @@ from .explore_analyzer import (
     suggest_topic_divisions,
 )
 from .file_generators import ConversionReportBuilder, FileGenerator, MergeError
-from .looker_parser import LookerView, find_and_parse_view
+from .looker_parser import (
+    LookerView,
+    ViewExtendsResolution,
+    ViewSource,
+    effective_view,
+    load_views,
+    own_fields,
+    resolve_view_extends,
+    view_from_index,
+)
 from .omni_models import OmniDimension, OmniMeasure, OmniQuery, OmniTopic, OmniView
 from .rule_applier import (
     MANUAL,
@@ -122,6 +139,9 @@ from .rule_applier import (
 
 PROVENANCE_TAG = 'in_omni_in_looker_not_csv'
 AUTO_DEPENDENCY_TAG = 'auto_dependency'
+# A field two parents of `extends:` define differently, written into the child
+# with the definition Looker uses (Omni would take the first parent's)
+RESOLVED_FROM_EXTENDS_TAG = 'resolved_from_extends'
 
 # Looker join type -> Omni join_type (https://docs.omni.co/modeling/relationships/parameters/join-type)
 JOIN_TYPE_MAP = {
@@ -139,6 +159,16 @@ DATE_FILTER_TIMEFRAMES = ('date', 'time', 'raw')
 
 _FIELD_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\}')
 _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_\-]*')
+
+
+@dataclass
+class ExposedField:
+    """A field a view offers to the views that extend it, as the migrator would write it"""
+    kind: str  # dimension, dimension_group or measure
+    looker_type: str  # as in `_field_types`: picks the filter grammar
+    origin: str  # view whose migration writes (or fails to write) the field
+    reason: Optional[str] = None  # why it is not available in Omni (None: it is)
+    primary_key: bool = False
 
 
 @dataclass
@@ -193,7 +223,13 @@ class MigrationOrchestrator:
             dry_run=dry_run
         )
 
-        self._view_cache: Dict[str, Optional[LookerView]] = {}
+        # Repo-wide caches: every .lkml file is parsed once per run
+        self._view_index: Optional[Tuple[Dict[str, List[LookerView]], Dict[str, List[str]]]] = None
+        self._extends_cache: Dict[str, Any] = {}
+        self._resolution_cache: Dict[str, Optional[ViewExtendsResolution]] = {}
+        self._full_view_cache: Dict[str, Optional[LookerView]] = {}
+        self._exposed_cache: Dict[str, Dict[str, ExposedField]] = {}
+        self._explore_views_cache: Optional[Set[str]] = None
         self._explore_cache: Optional[Tuple[Dict[str, List[ExploreInfo]], Dict[str, List[str]]]] = None
 
         # Raises ValueError on duplicate grant names
@@ -237,18 +273,35 @@ class MigrationOrchestrator:
                 csv_path=str(self.csv_path),
                 owner=owner,
                 phase=phase,
-                view=view_name
+                view=view_name,
+                allow_empty=True
             )
             csv_fields = get_fields_for_view(context.csv_rows, view_name)
+            empty_scope_reason = None
+            if not csv_fields:
+                empty_scope_reason = self._empty_scope_reason(view_name)
+                if empty_scope_reason is None:
+                    raise ValueError(f"No CSV rows found for owner={owner}, phase={phase}, view={view_name}")
             print(f"      ✓ CSV fields in scope: {len(csv_fields)}")
 
             # ---------------- Step 2: parse ----------------
             print("\n[2/5] Parsing Looker view...")
-            looker_view = find_and_parse_view(str(self.looker_repo), view_name)
+            declared_view = view_from_index(self._load_views()[0], str(self.looker_repo), view_name)
+            # Inheritance: from here on looker_view is the view as Looker sees
+            # it after `extends:` (own fields with the parameters they inherit,
+            # plus the fields two parents define differently)
+            resolution = self._view_resolution(view_name)
+            inheritance = resolution if resolution is not None and not resolution.problem else None
+            looker_view = effective_view(declared_view, inheritance) if inheritance else declared_view
+            inherited = self._inherited_exposure(inheritance) if inheritance else {}
+            resolved_fields = {name: f for name, f in inheritance.conflicts.items()
+                               if name not in own_fields(declared_view)} if inheritance else {}
             print(f"      ✓ Found: {looker_view.file_path}")
             print(f"      ✓ Dimensions: {len(looker_view.dimensions)}")
             print(f"      ✓ Dimension groups: {len(looker_view.dimension_groups)}")
             print(f"      ✓ Measures: {len(looker_view.measures)}")
+            if inheritance:
+                print(f"      ✓ Extends: {', '.join(inheritance.parents)} ({len(inherited)} inherited field(s))")
 
             omni_view_name = view_name
             report_builder = ConversionReportBuilder(
@@ -257,23 +310,39 @@ class MigrationOrchestrator:
                 phase=phase
             )
 
-            kinds = {
-                'dimension': looker_view.dimensions,
-                'dimension_group': looker_view.dimension_groups,
-                'measure': looker_view.measures,
-            }
-            scope = self._resolve_scope(csv_fields, kinds, looker_view, view_name, report_builder, issues)
+            kinds = self._field_kinds(looker_view)
+            scope = self._resolve_scope(csv_fields, kinds, looker_view, view_name, report_builder, issues, inherited)
             in_scope_names: Set[str] = set().union(*scope.values())
 
-            self._flag_view_features(looker_view, report_builder, issues)
+            self._flag_view_features(looker_view, report_builder, issues, resolution)
 
-            # Fail fast on a source that cannot be converted
-            schema, view_source = self._determine_view_source(looker_view, report_builder, issues)
+            is_template, template_reason = self._view_template_decision(declared_view)
+            if is_template:
+                # A template has no table: the views that extend it supply one
+                schema, view_source = None, {}
+                report_builder.add_advanced_feature(
+                    feature="Template View",
+                    status="CONVERTED",
+                    details=f"Written with `template: true`, without `schema` and `table_name`: {template_reason}.",
+                    action_required="A template view cannot be queried on its own. Migrate the views that extend it."
+                )
+                if empty_scope_reason and any(kinds.values()):
+                    issues.append(
+                        f"No CSV rows for template view {view_name}: every field is written hidden, and the views "
+                        f"that extend it inherit the fields hidden. List the fields to expose in the CSV under "
+                        f"this view"
+                    )
+            else:
+                # Fail fast on a source that cannot be converted
+                schema, view_source = self._determine_view_source(
+                    looker_view, report_builder, issues,
+                    inherited_source=inheritance.source if inheritance else None
+                )
 
             # ---------------- Step 3: convert ----------------
             print("\n[3/5] Applying conversion rules...")
 
-            is_derived = bool(looker_view.derived_table)
+            is_derived = bool(view_source) and 'table_name' not in view_source
             view_filename = f"{omni_view_name}.{'query.view' if is_derived else 'view.yaml'}"
             existing_view, existing_view_source = self._find_existing_view(omni_view_name, view_filename, is_derived)
             existing_fields = {}
@@ -281,34 +350,9 @@ class MigrationOrchestrator:
                 existing_fields.update(existing_view.get('dimensions') or {})
                 existing_fields.update(existing_view.get('measures') or {})
 
-            rule_applier = RuleApplier(
-                phase=phase,
-                verified=verified,
-                view_name=view_name,
-                canonical_mappings=self.config.canonical_mappings,
-                column_fields=self._column_fields(looker_view, existing_fields),
-                field_types=self._field_types(looker_view),
-                type_resolver=self._resolve_cross_view_type
+            rule_applier, results, blocked = self._convert_view_fields(
+                looker_view, inherited, existing_fields, phase, verified
             )
-            all_dimension_names = set(looker_view.dimensions) | set(looker_view.dimension_groups)
-            all_measure_names = set(looker_view.measures)
-
-            def convert(kind: str, name: str) -> ConversionResult:
-                data = kinds[kind][name]
-                if kind == 'dimension':
-                    return rule_applier.convert_dimension(name, data)
-                if kind == 'dimension_group':
-                    return rule_applier.convert_dimension_group(name, data)
-                return rule_applier.convert_measure(
-                    name, data, all_dimensions=all_dimension_names, all_measures=all_measure_names
-                )
-
-            results: Dict[str, Tuple[str, ConversionResult]] = {}
-            for kind, fields in kinds.items():
-                for name in fields:
-                    results[name] = (kind, convert(kind, name))
-
-            blocked = self._blocked_fields(results, set(existing_fields))
 
             # Out-of-scope fields needed by written in-scope fields
             auto_deps: Set[str] = set()
@@ -339,11 +383,19 @@ class MigrationOrchestrator:
                     result.omni_field = None
                     result.risk_level = "HIGH"
                     result.warnings.append(f"{MANUAL}: {blocked[name]} - not written")
+                if not result.omni_field and name in inherited:
+                    # Without its own definition the view shows the inherited one
+                    shown = (', '.join(f"`{p}`" for p in resolved_fields[name].conflict[:1])
+                             if name in resolved_fields else f"`{inherited[name].origin}`")
+                    result.warnings.append(
+                        f"{MANUAL}: until it is written by hand, Omni inherits the definition of {shown} for "
+                        f"this field, which is not the one Looker uses"
+                    )
                 if in_scope or name in auto_deps:
                     self._add_result(report_builder, kind, name, result)
                 if not result.omni_field:
                     reason = '; '.join(result.warnings)
-                    if in_scope:
+                    if in_scope or name in inherited:
                         print(f"      ✗ NOT CONVERTED: {name}")
                         issues.append(f"{name}: {reason}")
                         report_builder.add_not_converted(name, reason)
@@ -365,12 +417,17 @@ class MigrationOrchestrator:
                     result.omni_field.tags = [PROVENANCE_TAG]
                     hidden_count += 1
                     report_builder.add_not_converted(name, "Not in CSV scope - added with hidden: true")
+                if name in resolved_fields:
+                    result.omni_field.tags = list(result.omni_field.tags) + [RESOLVED_FROM_EXTENDS_TAG]
 
                 target = omni_measures if kind == 'measure' else omni_dimensions
                 target[name] = result.omni_field
                 if result.db_column_name:
                     field_to_column_mapping[name] = result.db_column_name
                 cross_view_refs |= result.cross_view_refs
+
+            if resolved_fields:
+                self._report_extends_conflicts(resolved_fields, omni_dimensions, omni_measures, report_builder)
 
             if cross_view_refs:
                 views = sorted({ref.split('.')[0] for ref in cross_view_refs})
@@ -402,8 +459,7 @@ class MigrationOrchestrator:
                 looker_view.label or omni_view_name.replace('_', ' ').title()
             )
             view_kwargs: Dict[str, Any] = {
-                'schema': schema,
-                'folder': f"{schema}/{self.curated_folder}",
+                'folder': f"{schema or self.default_schema}/{self.curated_folder}",
                 'label': view_label,
                 'description': view_description,
                 'tags': list(dict.fromkeys([
@@ -418,16 +474,25 @@ class MigrationOrchestrator:
             if looker_view.file_comment:
                 view_kwargs['ai_context'] = looker_view.file_comment
             view_kwargs.update(view_source)
-            if looker_view.is_extension:
+            if is_template:
                 view_kwargs['template'] = True
+            else:
+                view_kwargs['schema'] = schema
+            if inheritance:
+                view_kwargs['extends'] = list(inheritance.parents)
 
             view = OmniView(**view_kwargs)
-            print(f"      ✓ Schema: {schema}")
+            print(f"      ✓ Schema: {schema or '(none, template view)'}")
             print(f"      ✓ Dimensions: {len(omni_dimensions)}  Measures: {len(omni_measures)}")
 
             # ---------------- Step 5: render, validate, write ----------------
             print("\n[5/5] Generating files...")
-            if is_derived:
+            if is_template:
+                report_builder.set_view_file_decision(
+                    'Template view (.view.yaml, template: true)', str(self.omni_repo / view_filename),
+                    f"Template view: {template_reason}"
+                )
+            elif is_derived:
                 report_builder.set_view_file_decision(
                     'Query view (.query.view)', str(self.omni_repo / view_filename),
                     'Looker derived table converted to an Omni query view'
@@ -474,7 +539,12 @@ class MigrationOrchestrator:
                         issues.append(f"Merge: {note}")
 
             final_dims = render_info['final'].get('dimensions') or {}
-            if not any(isinstance(d, dict) and d.get('primary_key') is True for d in final_dims.values()):
+            final_names = set(final_dims) | set(render_info['final'].get('measures') or {})
+            # A key a parent defines (and that converts) reaches this view through `extends:`
+            inherited_key = any(exposed.primary_key and exposed.reason is None and name not in final_names
+                                for name, exposed in inherited.items())
+            if not inherited_key and not any(
+                    isinstance(d, dict) and d.get('primary_key') is True for d in final_dims.values()):
                 print("      ⚠️  WARNING: No primary key in the final view!")
                 issues.append("No primary key dimension in the final view")
                 report_builder.add_advanced_feature(
@@ -522,13 +592,32 @@ class MigrationOrchestrator:
             planned_files=self.file_generator.planned_writes[writes_before:]
         )
 
-    def _resolve_scope(self, csv_fields, kinds, looker_view, view_name, report_builder, issues) -> Dict[str, Set[str]]:
-        """Map CSV rows to Looker fields; report rows that do not match"""
+    def _resolve_scope(self, csv_fields, kinds, looker_view, view_name, report_builder, issues,
+                       inherited: Optional[Dict[str, ExposedField]] = None) -> Dict[str, Set[str]]:
+        """
+        Map CSV rows to Looker fields; report rows that do not match
+
+        A row naming a field the view inherits through `extends:` is not
+        written here (the parent view carries it) and is reported apart.
+        """
         scope: Dict[str, Set[str]] = {kind: set() for kind in kinds}
         missing_rows = []
+        inherited_rows: List[str] = []
         for row in csv_fields:
             name, csv_type = row.get('field'), row.get('field_type')
             actual = next((k for k, fields in kinds.items() if name in fields), None)
+            if actual is None and inherited and name in inherited:
+                exposed = inherited[name]
+                inherited_rows.append(f"{name} (from `{exposed.origin}`)")
+                if exposed.reason:
+                    issues.append(
+                        f"CSV field '{name}' is inherited from view {exposed.origin}, where it is not migrated "
+                        f"({exposed.reason})"
+                    )
+                    report_builder.add_not_converted(
+                        name, f"{MANUAL}: inherited from `{exposed.origin}`, where it is not migrated ({exposed.reason})"
+                    )
+                continue
             if actual is None and name in looker_view.parameters:
                 issues.append(f"CSV field '{name}' is a Looker parameter; parameters are not migrated")
                 report_builder.add_not_converted(name, f"{MANUAL}: Looker parameter - recreate as an Omni templated filter")
@@ -552,7 +641,249 @@ class MigrationOrchestrator:
                 details="These CSV rows have no matching field in the Looker view: " + ', '.join(missing_rows),
                 action_required="Fix the field name/type in the CSV (dimension_groups use the group name, e.g. `created`) or remove the row."
             )
+        if inherited_rows:
+            issues.append(
+                f"CSV fields inherited through extends are not written in {view_name}: {', '.join(inherited_rows)}. "
+                f"Whether they are visible follows the parent view's own CSV scope"
+            )
+            report_builder.add_advanced_feature(
+                feature="CSV Fields Inherited Through extends",
+                status=MANUAL,
+                details="These CSV rows name fields the view inherits; they are defined in the parent view, not here: "
+                        + ', '.join(inherited_rows),
+                action_required="List each field in the CSV under the parent view that defines it. A field the parent "
+                                "writes hidden (out of its scope) is hidden in this view too."
+            )
         return scope
+
+    # ------------------------------------------------------------------
+    # View inheritance (extends) and template views
+    # ------------------------------------------------------------------
+
+    def _load_views(self) -> Tuple[Dict[str, List[LookerView]], Dict[str, List[str]]]:
+        """Every view under --looker-repo (parsed once per run), see `load_views`"""
+        if self._view_index is None:
+            self._view_index = load_views(str(self.looker_repo))
+        return self._view_index
+
+    def _view_resolution(self, view_name: str) -> Optional[ViewExtendsResolution]:
+        """The view's resolved `extends:` chain; None when it extends nothing or is not found"""
+        if view_name not in self._resolution_cache:
+            view = self._cached_view(view_name)
+            self._resolution_cache[view_name] = (
+                resolve_view_extends(view, self._load_views()[0], self._extends_cache)
+                if view is not None and view.extends else None
+            )
+        return self._resolution_cache[view_name]
+
+    def _full_view(self, view_name: str) -> Optional[LookerView]:
+        """The view with every field it has in Looker: its own and the inherited ones"""
+        if view_name not in self._full_view_cache:
+            view = self._cached_view(view_name)
+            resolution = self._view_resolution(view_name)
+            if view is not None and resolution is not None and not resolution.problem:
+                view = effective_view(view, resolution, include_inherited=True)
+            self._full_view_cache[view_name] = view
+        return self._full_view_cache[view_name]
+
+    @staticmethod
+    def _field_kinds(looker_view: LookerView) -> Dict[str, Dict[str, Dict]]:
+        return {
+            'dimension': looker_view.dimensions,
+            'dimension_group': looker_view.dimension_groups,
+            'measure': looker_view.measures,
+        }
+
+    def _convert_view_fields(
+        self,
+        looker_view: LookerView,
+        inherited: Dict[str, ExposedField],
+        existing_fields: Dict,
+        phase: int,
+        verified: bool
+    ) -> Tuple[RuleApplier, Dict[str, Tuple[str, ConversionResult]], Dict[str, str]]:
+        """
+        Convert every field of the view
+
+        `inherited` holds the fields the view receives through `extends:`.
+        They are not converted here (the parent view carries them), but a
+        reference to one follows the same rules as a reference to a field of
+        the view itself.
+
+        Returns:
+            (rule applier, {field: (kind, result)}, {field: reason it cannot be written})
+        """
+        kinds = self._field_kinds(looker_view)
+        field_types = {name: exposed.looker_type for name, exposed in inherited.items()}
+        field_types.update(self._field_types(looker_view))
+        rule_applier = RuleApplier(
+            phase=phase,
+            verified=verified,
+            view_name=looker_view.view_name,
+            canonical_mappings=self.config.canonical_mappings,
+            column_fields=self._column_fields(looker_view, existing_fields),
+            field_types=field_types,
+            type_resolver=self._resolve_cross_view_type
+        )
+        inherited_measures = {name for name, exposed in inherited.items() if exposed.kind == 'measure'}
+        all_dimension_names = (set(looker_view.dimensions) | set(looker_view.dimension_groups)
+                               | (set(inherited) - inherited_measures))
+        all_measure_names = set(looker_view.measures) | inherited_measures
+
+        def convert(kind: str, name: str) -> ConversionResult:
+            data = kinds[kind][name]
+            if kind == 'dimension':
+                return rule_applier.convert_dimension(name, data)
+            if kind == 'dimension_group':
+                return rule_applier.convert_dimension_group(name, data)
+            return rule_applier.convert_measure(
+                name, data, all_dimensions=all_dimension_names, all_measures=all_measure_names
+            )
+
+        results: Dict[str, Tuple[str, ConversionResult]] = {}
+        for kind, fields in kinds.items():
+            for name in fields:
+                results[name] = (kind, convert(kind, name))
+        return rule_applier, results, self._blocked_fields(results, set(existing_fields), inherited)
+
+    def _inherited_exposure(self, resolution: ViewExtendsResolution) -> Dict[str, ExposedField]:
+        """
+        The fields a view receives through a resolved `extends:` chain, as
+        Omni sees them: for a name several parents supply, the first parent
+        in the list wins.
+        """
+        inherited: Dict[str, ExposedField] = {}
+        for parent in resolution.parents:
+            for name, exposed in self._exposed_fields(parent).items():
+                inherited.setdefault(name, exposed)
+        return inherited
+
+    def _exposed_fields(self, view_name: str) -> Dict[str, ExposedField]:
+        """
+        Every field the Omni view of `view_name` offers to the views that
+        extend it: what its own migration writes, plus what it inherits.
+
+        Each field is judged in the view that defines it, with the rules its
+        own migration applies, so a field that view cannot migrate is known
+        to be missing (with the reason) wherever it is referenced. Computed
+        once per view and run; a resolved chain has no cycle.
+        """
+        if view_name in self._exposed_cache:
+            return self._exposed_cache[view_name]
+        view = self._cached_view(view_name)
+        if view is None:
+            self._exposed_cache[view_name] = {}
+            return {}
+        resolution = self._view_resolution(view_name)
+        inheritance = resolution if resolution is not None and not resolution.problem else None
+        inherited = self._inherited_exposure(inheritance) if inheritance else {}
+        effective = effective_view(view, inheritance) if inheritance else view
+        _, results, blocked = self._convert_view_fields(effective, inherited, {}, phase=0, verified=True)
+
+        types = self._field_types(effective)
+        exposed = dict(inherited)
+        for name, (kind, result) in results.items():
+            reason = None
+            if name in blocked:
+                reason = blocked[name]
+            elif not result.omni_field:
+                reason = '; '.join(result.warnings) or 'not convertible'
+            exposed[name] = ExposedField(
+                kind=kind,
+                looker_type=types.get(name, 'string'),
+                origin=view_name,
+                reason=reason,
+                primary_key=reason is None and getattr(result.omni_field, 'primary_key', None) is True
+            )
+        self._exposed_cache[view_name] = exposed
+        return exposed
+
+    def _views_used_by_explores(self) -> Set[str]:
+        """Every view an explore under --looker-repo uses as its base or as a join target"""
+        if self._explore_views_cache is None:
+            definitions, _ = self._load_explores()
+            used: Set[str] = set()
+            for explores in definitions.values():
+                for explore in explores:
+                    merged = explore
+                    if explore.extends:
+                        resolved = resolve_explore_extends(explore, definitions)
+                        if not resolved.problem:
+                            merged = resolved.explore
+                    used.add(merged.base_view)
+                    used.update(join.source_view for join in merged.joins)
+            self._explore_views_cache = used
+        return self._explore_views_cache
+
+    def _extending_views(self, view_name: str) -> List[str]:
+        """Names of the views that list `view_name` in their `extends:`"""
+        return sorted({
+            view.view_name
+            for views in self._load_views()[0].values()
+            for view in views
+            if view_name in view.extends
+        })
+
+    def _view_template_decision(self, looker_view: LookerView) -> Tuple[bool, Optional[str]]:
+        """
+        Whether the view is a template (`template: true`), and why
+
+        A view with `extension: required` is one. So is a view that has no
+        `sql_table_name` and no `derived_table`, is extended by another view
+        and is never the base or a join target of an explore.
+        """
+        extenders = self._extending_views(looker_view.view_name)
+        extended_by = ', '.join(f"`{name}`" for name in extenders)
+        if looker_view.is_extension:
+            return True, ("the view has `extension: required` and "
+                          + (f"is extended by {extended_by}" if extenders
+                             else "no view under --looker-repo extends it"))
+        if looker_view.sql_table_name or looker_view.derived_table or not extenders:
+            return False, None
+        if looker_view.view_name in self._views_used_by_explores():
+            return False, None
+        return True, (f"the view has no sql_table_name and no derived_table, is extended by {extended_by} and is "
+                      f"never used directly as an explore base or join target under --looker-repo")
+
+    def _empty_scope_reason(self, view_name: str) -> Optional[str]:
+        """
+        Why a view may be migrated with no CSV rows: it has no fields of its
+        own (it only extends other views), or it is a template. None when
+        the missing rows are an error.
+        """
+        view = self._cached_view(view_name)
+        if view is None:
+            return None
+        if not own_fields(view):
+            return "the view has no fields of its own"
+        if self._view_template_decision(view)[0]:
+            return "the view is a template"
+        return None
+
+    @staticmethod
+    def _report_extends_conflicts(
+        resolved_fields: Dict[str, Any],
+        omni_dimensions: Dict[str, OmniDimension],
+        omni_measures: Dict[str, OmniMeasure],
+        report_builder: ConversionReportBuilder
+    ):
+        """Report the fields two parents define differently and what was written for them"""
+        lines = []
+        for name, inherited in sorted(resolved_fields.items()):
+            written = name in omni_dimensions or name in omni_measures
+            parents = ', '.join(f"`{parent}`" for parent in inherited.conflict)
+            lines.append(
+                f"  {name} ({inherited.kind}): defined differently by {parents}. Looker uses the last "
+                f"(`{inherited.conflict[-1]}`), Omni would use the first (`{inherited.conflict[0]}`). "
+                + (f"Written into this view with the Looker definition, tagged `{RESOLVED_FROM_EXTENDS_TAG}`."
+                   if written else "NOT written: the Looker definition could not be converted (see Not Converted).")
+            )
+        report_builder.add_advanced_feature(
+            feature="Extends Conflict (fields resolved from extends)",
+            status="CONVERTED, REVIEW",
+            details="Parents in `extends:` define these fields differently:\n" + '\n'.join(lines),
+            action_required="Check each field against Looker. A field outside the CSV scope is written hidden."
+        )
 
     @staticmethod
     def _column_fields(looker_view: LookerView, existing_fields: Dict) -> Dict[str, str]:
@@ -600,7 +931,7 @@ class MigrationOrchestrator:
 
     def _resolve_cross_view_type(self, view_name: str, field_name: str) -> Optional[str]:
         """Looker type of view.field in another view (None if unknown)"""
-        other = self._cached_view(view_name)
+        other = self._full_view(view_name)
         if not other:
             return None
         if field_name in other.dimensions:
@@ -612,12 +943,19 @@ class MigrationOrchestrator:
         return None
 
     @staticmethod
-    def _blocked_fields(results: Dict[str, Tuple[str, ConversionResult]], existing_names: Set[str]) -> Dict[str, str]:
+    def _blocked_fields(
+        results: Dict[str, Tuple[str, ConversionResult]],
+        existing_names: Set[str],
+        inherited: Optional[Dict[str, ExposedField]] = None
+    ) -> Dict[str, str]:
         """
         Fields that converted but cannot be written because a same-view
         reference cannot be satisfied: undefined, not convertible, or circular.
+        A reference to an inherited field (`inherited`, from `extends:`) is
+        satisfied when the parent view migrates that field.
         Returns {field: reason}.
         """
+        inherited = inherited or {}
         status: Dict[str, Optional[str]] = {}
         stack: List[str] = []
 
@@ -636,6 +974,13 @@ class MigrationOrchestrator:
                 if dep not in results:
                     if dep in existing_names:
                         continue
+                    exposed = inherited.get(dep)
+                    if exposed is not None and exposed.reason is None:
+                        continue
+                    if exposed is not None:
+                        reason = (f"depends on inherited field {dep} (from view {exposed.origin}), "
+                                  f"which is not migrated ({exposed.reason})")
+                        break
                     reason = (f"references ${{{dep}}}, which is not defined in the view "
                               f"(dimension_group timeframes such as created_date must be rewritten for Omni)")
                     break
@@ -745,7 +1090,8 @@ class MigrationOrchestrator:
                 action_required="If you add them by hand, add their required_access_grants too."
             )
 
-    def _flag_view_features(self, looker_view: LookerView, report_builder: ConversionReportBuilder, issues: List[str]):
+    def _flag_view_features(self, looker_view: LookerView, report_builder: ConversionReportBuilder, issues: List[str],
+                            resolution: Optional[ViewExtendsResolution] = None):
         """Report view-level LookML features; access-related ones are also issues"""
         if looker_view.refinement_files:
             issues.append(f"View is refined in {', '.join(looker_view.refinement_files)}; refinements are not applied")
@@ -755,14 +1101,18 @@ class MigrationOrchestrator:
                 details="Refinements found in: " + ', '.join(looker_view.refinement_files),
                 action_required="Apply the refinement's changes (fields, access settings) to the Omni view by hand."
             )
-        if looker_view.extends:
-            issues.append(f"View extends {', '.join(looker_view.extends)}; inherited fields are not included")
+        if looker_view.extends and (resolution is None or resolution.problem):
+            problem = f" ({resolution.problem})" if resolution is not None else ""
+            issues.append(f"View extends {', '.join(looker_view.extends)}; inherited fields are not included{problem}")
             report_builder.add_advanced_feature(
                 feature="View Inheritance (extends)",
                 status=MANUAL,
-                details=f"View extends: {', '.join(looker_view.extends)}. Only fields declared in this file were migrated.",
+                details=f"View extends: {', '.join(looker_view.extends)}. Only fields declared in this file were "
+                        f"migrated and `extends:` was not written{problem}.",
                 action_required="Migrate the base view(s) and add the inherited fields this view needs."
             )
+        elif looker_view.extends:
+            self._report_view_inheritance(looker_view, resolution, report_builder, issues)
         if looker_view.access_filters:
             issues.append(f"View declares {len(looker_view.access_filters)} access_filter(s); not carried")
             report_builder.add_advanced_feature(
@@ -801,6 +1151,70 @@ class MigrationOrchestrator:
                 'view drill_fields/sets',
                 "Not migrated: view-level drill_fields and sets have no automatic Omni conversion"
             )
+
+    def _report_view_inheritance(
+        self,
+        looker_view: LookerView,
+        resolution: ViewExtendsResolution,
+        report_builder: ConversionReportBuilder,
+        issues: List[str]
+    ):
+        """Report a resolved `extends:` chain and what it brings that is not carried"""
+        parents = ', '.join(resolution.parents)
+        origins: Dict[str, List[str]] = {}
+        for name, inherited in sorted(resolution.fields.items()):
+            origins.setdefault(inherited.origin, []).append(name)
+        details = [
+            f"`extends: [{parents}]` written to the view (same order as Looker).",
+            f"Views in the chain: {', '.join(resolution.ancestors)}.",
+            "Inherited fields are defined in the parent views and are not copied here: "
+            + ('; '.join(f"from `{origin}`: {', '.join(names)}" for origin, names in origins.items()) or '(none)')
+            + ".",
+        ]
+        report_builder.add_advanced_feature(
+            feature="View Inheritance (extends)",
+            status="CONVERTED",
+            details='\n'.join(details),
+            action_required=f"Migrate the views in the chain too ({', '.join(resolution.ancestors)}): `extends:` "
+                            f"needs a view of each name in the Omni model."
+        )
+
+        refinements = self._load_views()[1]
+        for ancestor in resolution.ancestors:
+            parent = self._cached_view(ancestor)
+            if refinements.get(ancestor):
+                issues.append(f"Parent view {ancestor} is refined in {', '.join(refinements[ancestor])}; "
+                              f"refinements are not applied")
+                report_builder.add_advanced_feature(
+                    feature=f"Refinements of parent view {ancestor}",
+                    status=MANUAL,
+                    details="Refinements found in: " + ', '.join(refinements[ancestor]),
+                    action_required="Apply the refinement's changes to the Omni view by hand."
+                )
+            if parent is None:
+                continue
+            if parent.required_access_grants and not looker_view.required_access_grants:
+                issues.append(
+                    f"View-level required_access_grants inherited from {ancestor} not carried: "
+                    f"{', '.join(parent.required_access_grants)}"
+                )
+                report_builder.add_advanced_feature(
+                    feature=f"View-Level Access Grants inherited from {ancestor}",
+                    status=MANUAL,
+                    details=f"Parent view `{ancestor}` requires access grants, which this view inherits in Looker:\n"
+                            f"{self._format_grant_details(parent.required_access_grants)}",
+                    action_required="Define the grants in the Omni model and add required_access_grants to the view "
+                                    "or the topics that use it."
+                )
+            if parent.access_filters and not looker_view.access_filters:
+                issues.append(f"Parent view {ancestor} declares {len(parent.access_filters)} access_filter(s); "
+                              f"not carried")
+                report_builder.add_advanced_feature(
+                    feature=f"Access Filters inherited from {ancestor}",
+                    status=MANUAL,
+                    details=f"Parent view `{ancestor}` has {len(parent.access_filters)} access_filter(s)",
+                    action_required="Recreate as Omni topic access_filters."
+                )
 
     # ==================================================================
     # Explore analysis (view mode, --explore-analysis)
@@ -1243,7 +1657,7 @@ class MigrationOrchestrator:
         if expression is None or not str(expression).strip():
             return None, None, "it has no value (a required default filter needs one)"
 
-        parsed_view = self._cached_view(looker_view)
+        parsed_view = self._full_view(looker_view)
         if parsed_view is None:
             return None, None, f"view `{looker_view}` was not found under --looker-repo, so the field type is unknown"
         omni_field, kind, reason = self._filter_target(parsed_view, field_name)
@@ -1601,16 +2015,15 @@ class MigrationOrchestrator:
         print(f"{'='*60}\n")
 
     def _cached_view(self, view_name: str) -> Optional[LookerView]:
-        if view_name not in self._view_cache:
-            try:
-                self._view_cache[view_name] = find_and_parse_view(str(self.looker_repo), view_name)
-            except Exception:
-                self._view_cache[view_name] = None
-        return self._view_cache[view_name]
+        """The view as declared, from the repo-wide index; None if missing or defined in several files"""
+        try:
+            return view_from_index(self._load_views()[0], str(self.looker_repo), view_name)
+        except (FileNotFoundError, ValueError):
+            return None
 
     def _get_db_column_for_field(self, view_name: str, field_name: str) -> Optional[str]:
         """Warehouse column a Looker dimension reads, if it differs from its name"""
-        looker_view = self._cached_view(view_name)
+        looker_view = self._full_view(view_name)
         if not looker_view or field_name not in looker_view.dimensions:
             return None
         sql = looker_view.dimensions[field_name].get('sql')
@@ -1625,10 +2038,14 @@ class MigrationOrchestrator:
         self,
         looker_view: LookerView,
         report_builder: ConversionReportBuilder,
-        issues: List[str]
+        issues: List[str],
+        inherited_source: Optional[ViewSource] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Build the view source: {'table_name'[, 'catalog']}, {'sql'} or {'query'}
+
+        A view that declares no source of its own uses the one it inherits
+        through `extends:` (`inherited_source`), written out explicitly.
 
         Returns:
             (schema, source_dict)
@@ -1636,8 +2053,20 @@ class MigrationOrchestrator:
         Raises:
             ValueError: the source cannot be converted without guessing
         """
-        if looker_view.derived_table:
-            derived = looker_view.derived_table
+        derived_table, sql_table_name = looker_view.derived_table, looker_view.sql_table_name
+        if not derived_table and not sql_table_name and inherited_source is not None:
+            derived_table, sql_table_name = inherited_source.derived_table, inherited_source.sql_table_name
+            report_builder.add_advanced_feature(
+                feature="Inherited View Source",
+                status="CONVERTED",
+                details=f"The view declares no sql_table_name or derived_table. It inherits the "
+                        f"{'derived table' if derived_table else 'table'} of `{inherited_source.origin}` through "
+                        f"`extends:`, which was written into this view explicitly.",
+                action_required="Review the table or SQL."
+            )
+
+        if derived_table:
+            derived = derived_table
 
             persistence = [k for k in ('datagroup_trigger', 'sql_trigger_value', 'persist_for',
                                        'indexes', 'partition_keys', 'cluster_keys', 'increment_key')
@@ -1682,8 +2111,8 @@ class MigrationOrchestrator:
 
             raise ValueError("Derived table has neither sql nor explore_source; migrate this view manually")
 
-        if looker_view.sql_table_name:
-            return self._parse_table_name(looker_view.sql_table_name)
+        if sql_table_name:
+            return self._parse_table_name(sql_table_name)
 
         # Looker defaults the table to the view name
         issues.append("View has no sql_table_name or derived_table; using the view name as table")

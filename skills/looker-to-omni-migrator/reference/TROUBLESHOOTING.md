@@ -44,6 +44,7 @@ Error: No CSV rows found for owner=Team A, phase=0, view=users
 - The owner must match exactly: `"Team A"` does not match `"team a"` or `"Team A "`.
 - The phase must match (`P0` and `0` are equivalent).
 - The `view` value must match the LookML `view:` name.
+- A view with no fields of its own (it only extends other views) and a template view do not need CSV rows.
 
 ```bash
 grep ",users," migration/views.csv
@@ -109,7 +110,10 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `Custom value_format '...' not migrated; set an Omni format manually` | Pick an Omni format |
 | `No primary key dimension in the final view` | Add the key to the CSV and re-run, or set `primary_key: true` |
 | `View is refined in ...; refinements are not applied` | Apply the refinement by hand |
-| `View extends ...; inherited fields are not included` | Migrate the base view too, or copy the fields |
+| `View extends ...; inherited fields are not included (...)` | A parent view is missing, defined twice, or the chain is circular (the reason is in brackets). Point `--looker-repo` at the whole project, or copy the fields |
+| `CSV fields inherited through extends are not written in ...` | The rows name fields a parent view defines. List them in the CSV under that parent and migrate it |
+| `...: depends on inherited field x (from view p), which is not migrated` | The parent view cannot convert `x`. Fix it there first |
+| `No CSV rows for template view ...` | The template was migrated with every field hidden. Add its fields to the CSV under the template's name |
 | `Join x (NOT migrated): sql_on uses Liquid...` | Write the relationship by hand |
 | `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
 | `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |
