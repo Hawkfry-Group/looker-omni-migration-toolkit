@@ -189,8 +189,62 @@ for view in users products order_items; do
 done
 ```
 
+## Primary key finder
+
+A separate, optional script for views that have no primary key. It queries a sample of the data through the Omni CLI and needs an Omni role that is allowed to run manually written SQL. Full description: [../docs/PRIMARY_KEYS.md](../docs/PRIMARY_KEYS.md).
+
+```bash
+python scripts/find_primary_keys.py --model-id MODEL_ID [options]
+```
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--model-id ID` | required | Omni model the SQL runs against. |
+| `--branch-id ID` | none | Omni branch, when the views only exist on a branch. |
+| `--omni-repo DIR` | `./migration/staging/views` | Searched recursively for `*.view.yaml`, `*.view` and `*.query.view`. |
+| `--view NAME` | all views | Only this view (the file name without its suffix). Repeatable. An unknown name is an error. |
+| `--key VIEW=DIMENSION` | none | Your choice of key for a view with status `multiple_candidates`. Repeatable, one per view. Used only if that dimension is unique and not null in the sample; otherwise it is refused and nothing is written for that view. Written only with `--apply`. A view name that is not in the run is an error. |
+| `--recheck` | off | Also test views that already have a primary key. The existing key is reported, never replaced. |
+| `--sample-rows N` | `1000000` | Target sample size per view. |
+| `--date-column NAME` | none | Sample a recent window on this column instead of the plan for the warehouse. |
+| `--window-days N` | `30` | Size of the date window. Used with `--date-column`, and for the Redshift sort key window. |
+| `--max-unpartitioned-rows N` | `5000000` | BigQuery: an unpartitioned table with more rows is not scanned (`needs_decision`). |
+| `--allow-full-scan` | off | BigQuery: scan unpartitioned tables whatever their size. |
+| `--min-rows N` | `1000` | Smallest sample that can qualify a key. |
+| `--max-candidates N` | `12` | Most columns tested per view. |
+| `--max-pairs N` | `10` | Most column pairs tested when no single column is unique. `0` turns pairs off. |
+| `--profile NAME` | CLI default | Passed to the Omni CLI as `-p`. |
+| `--base-url URL` | CLI default | Passed to the Omni CLI as `--base-url`. |
+| `--dialect NAME` | from the model's connection | `bigquery`, `snowflake`, `redshift`, `postgres`, `duckdb` or `motherduck`. Skips the connection lookup. |
+| `--apply` | off (dry run) | Write `primary_key: true` and the tag `primary_key_from_sample` on the chosen dimension. |
+| `--report PATH` | `primary_keys.md` | Markdown report. Written in dry runs too. |
+| `--json PATH` | none | Machine-readable report: `model_id`, `branch_id`, `dialect`, `mode`, `note`, `summary`, and `views` with one record per view (`view`, `file`, `table`, `dialect`, `strategy`, `filter`, `rows_checked`, `candidates`, `qualifying`, `chosen_key`, `key_source`, `existing_key`, `pair_suggestions`, `status`, `message`, `applied`). |
+
+Statuses: `key_found`, `multiple_candidates`, `pair_suggested`, `no_key_found`, `sample_too_small`, `needs_decision`, `query_error`, `skipped`.
+
+| Code | Meaning |
+|------|---------|
+| `0` | The run completed. Some views may have no key or several candidates to choose from (`multiple_candidates`, nothing written), a refused `--key` is reported for its view, and a query error on one view is recorded as `query_error` without stopping the run. |
+| `1` | An input or connection error stopped the run: `--omni-repo` missing or empty, unknown `--view`, `--key` naming a view that is not in the run, Omni CLI not installed, the dialect could not be read, authentication failed, or the role may not run manually written SQL. No report is written when a connection error stops the run. |
+| `2` | Invalid arguments, including a `--key` that is not `VIEW=DIMENSION` or two different `--key` values for one view. |
+
+```bash
+# Dry run, then read primary_keys.md
+python scripts/find_primary_keys.py --model-id MODEL_ID --branch-id BRANCH_ID
+
+# Write the keys
+python scripts/find_primary_keys.py --model-id MODEL_ID --branch-id BRANCH_ID --apply
+
+# Several columns were unique in the sample: choose one, then write it
+python scripts/find_primary_keys.py --model-id MODEL_ID --view sales --key sales=transaction_id --apply
+
+# One large table, last 7 days on a date column
+python scripts/find_primary_keys.py --model-id MODEL_ID --view events --date-column event_date --window-days 7
+```
+
 ## See also
 
 - [CSV_REFERENCE.md](CSV_REFERENCE.md)
 - [OUTPUT_FILES.md](OUTPUT_FILES.md)
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+- [../docs/PRIMARY_KEYS.md](../docs/PRIMARY_KEYS.md)

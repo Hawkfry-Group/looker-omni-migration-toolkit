@@ -84,6 +84,26 @@ Merging: if the output directory already holds `{view}.view.yaml` from an earlie
 4. Never edit the user's CSV. Suggest CSV changes instead.
 5. Remind the user the output is not validated against a live Omni instance: it should be loaded in an Omni branch before promotion.
 
+### 4. Offer the primary key finder when views have no key
+
+`scripts/find_primary_keys.py` is a separate, optional script. It is never part of a conversion run. Offer it when both of these are true:
+
+- the converted views are loaded into an Omni branch and validate there, and
+- one or more views have no primary key (the report says `No primary key dimension in the final view`, or Omni warns about a missing primary key).
+
+Before running it, tell the user:
+
+- It runs SQL against their warehouse through the Omni CLI (`omni`), so it needs the CLI configured and an Omni role that is allowed to run manually written SQL. If the role is not allowed, the run stops with exit code 1.
+- It tests a sample, not the whole table. A sample can prove a column is not unique; it can only suggest that it is. Say "unique in the sample", and repeat the sample size and strategy from the report when you present a key.
+- It is a dry run unless `--apply` is given. Run the dry run first, show the user `primary_keys.md`, and add `--apply` only when they ask for it.
+
+```bash
+python <skill-dir>/scripts/find_primary_keys.py --model-id MODEL_ID --branch-id BRANCH_ID \
+  --omni-repo ./migration/staging/views
+```
+
+After the run, list every view by status. For `multiple_candidates` (two or more columns were unique in the sample), never choose for the user and never edit the view file yourself: show every qualifying column with its evidence and any "likely foreign key" note from the report, ask which column identifies a row, then re-run with `--key VIEW=DIMENSION` (repeatable; it is refused if that column did not qualify, and it only writes together with `--apply`). For `needs_decision` (a large unpartitioned BigQuery table), ask the user to choose between `--date-column` with `--window-days` and `--allow-full-scan`; do not choose a full scan for them. For `pair_suggested`, show the suggested dimension and let the user add it; the script never writes pairs. SQL query views are skipped and need their key set by hand. Details: `docs/PRIMARY_KEYS.md`.
+
 ### Prompts users typically give
 
 There are no slash commands for this skill. Users describe what they want, for example:
@@ -151,6 +171,7 @@ Full rules: `rules/migration_rules.md`. Omni syntax: `rules/model_details_omni.m
 | Omni YAML syntax | `rules/model_details_omni.md` |
 | Derived tables | `docs/QUERY_VIEWS.md` |
 | Access grants | `docs/ACCESS_GRANTS.md` |
+| Views with no primary key (optional finder script) | `docs/PRIMARY_KEYS.md` |
 | Flags, defaults, exit codes, merging | `reference/COMMAND_REFERENCE.md` |
 | CSV format | `reference/CSV_REFERENCE.md` |
 | Output files and report sections | `reference/OUTPUT_FILES.md` |
