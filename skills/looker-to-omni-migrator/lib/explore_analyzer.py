@@ -12,6 +12,7 @@ to use and to curate for AI when they stay focused. This analyzer:
    `*.model.lkml` or `*.explore.lkml`)
 2. Parses explore definitions, joins (including `from:` aliases) and
    row-level restrictions (`access_filter`, `sql_always_where`, `always_filter`)
+   and resolves explore inheritance (`extends:`, see `resolve_explore_extends`)
 3. Analyzes complexity based on join count
 4. Suggests topic divisions
 5. Generates analysis reports for LLM/human review
@@ -139,6 +140,13 @@ class ExploreInfo:
     sql_always_having: Optional[str] = None
     always_join: List[str] = field(default_factory=list)
     hidden: bool = False
+    hidden_explicit: bool = False  # `hidden:` is written on the explore (yes or no)
+    view_name: Optional[str] = None  # raw `view_name:`
+    from_view: Optional[str] = None  # raw `from:`
+    extension_required: bool = False  # `extension: required`
+    # Filled by resolve_explore_extends: item -> explore that supplied it.
+    # Items are attribute names (e.g. "always_filter") and "join:<name>".
+    sources: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -264,12 +272,201 @@ def parse_explore_file(file_path: str) -> List[ExploreInfo]:
             extends=_flatten_all(explore_dict.get('extends__all') or explore_dict.get('extends')),
             sql_always_having=explore_dict.get('sql_always_having'),
             always_join=[str(j) for j in _as_list(explore_dict.get('always_join'))],
-            hidden=str(explore_dict.get('hidden', 'no')).lower() == 'yes'
+            hidden=str(explore_dict.get('hidden', 'no')).lower() == 'yes',
+            hidden_explicit='hidden' in explore_dict,
+            view_name=explore_dict.get('view_name'),
+            from_view=explore_dict.get('from'),
+            extension_required=str(explore_dict.get('extension', '')).lower() == 'required'
         )
 
         explores.append(explore)
 
     return explores
+
+
+def load_explores(looker_repo: str) -> Tuple[Dict[str, List[ExploreInfo]], Dict[str, List[str]]]:
+    """
+    Parse every explore under the repository
+
+    Returns:
+        (definitions, refinements): explore name -> its definitions (more
+        than one means the name is declared twice), and explore name -> files
+        holding a refinement of it (`explore: +name`)
+    """
+    definitions: Dict[str, List[ExploreInfo]] = {}
+    refinements: Dict[str, List[str]] = {}
+    for file_path in find_explore_files(looker_repo):
+        try:
+            explores = parse_explore_file(file_path)
+        except Exception as e:
+            print(f"      ⚠️  Could not parse {file_path}: {e}")
+            continue
+        for explore in explores:
+            if explore.name.startswith('+'):
+                refinements.setdefault(explore.name[1:], []).append(file_path)
+            else:
+                definitions.setdefault(explore.name, []).append(explore)
+    return definitions, refinements
+
+
+def find_extending_explores(explore_name: str, definitions: Dict[str, List[ExploreInfo]]) -> List[str]:
+    """Names of the explores that list `explore_name` in their `extends:`"""
+    return sorted({
+        explore.name
+        for explores in definitions.values()
+        for explore in explores
+        if explore_name in explore.extends
+    })
+
+
+# ----------------------------------------------------------------------
+# Explore inheritance (extends)
+# ----------------------------------------------------------------------
+
+# Explore attributes that follow "the child's value overrides the parent's".
+# `hidden` is handled apart (it needs to know whether the child wrote it).
+_INHERITED_ATTRIBUTES = (
+    'label', 'description', 'group_label', 'access_grants', 'access_filters', 'sql_always_where',
+    'sql_always_having', 'always_filter', 'conditionally_filter', 'fields', 'always_join',
+    'view_name', 'from_view',
+)
+_JOIN_ATTRIBUTES = ('type', 'relationship', 'fields', 'from_view', 'required_access_grants', 'required_joins')
+# Alternative ways to write the join condition: taken together from one side
+_JOIN_CONDITION_ATTRIBUTES = ('sql_on', 'foreign_key', 'sql')
+
+
+@dataclass
+class ExtendsResolution:
+    """Result of resolving an explore's `extends:` chain"""
+    explore: ExploreInfo  # merged explore (the explore itself when `problem` is set)
+    ancestors: List[str] = field(default_factory=list)  # every explore merged in, nearest last
+    problem: Optional[str] = None  # why the chain could not be resolved
+    # (join, explore that overrides it, explore it was inherited from, partial)
+    overridden_joins: List[Tuple[str, str, str, bool]] = field(default_factory=list)
+    # (attribute, overriding explore, overridden explore) for values set on both sides
+    overridden_settings: List[Tuple[str, str, str]] = field(default_factory=list)
+
+
+class _Unresolved(Exception):
+    pass
+
+
+def _is_set(value) -> bool:
+    return value is not None and value != [] and value != {}
+
+
+def _merge_join(base: JoinDefinition, over: JoinDefinition) -> Tuple[JoinDefinition, bool]:
+    """
+    Merge a redeclared join parameter by parameter (the redeclaration wins)
+
+    Returns the merged join and whether it kept any parameter of `base`
+    (a partial override).
+    """
+    values = {}
+    partial = False
+    for attr in _JOIN_ATTRIBUTES:
+        if _is_set(getattr(over, attr)):
+            values[attr] = getattr(over, attr)
+        else:
+            values[attr] = getattr(base, attr)
+            partial = partial or _is_set(getattr(base, attr))
+    condition_source = over if any(_is_set(getattr(over, a)) for a in _JOIN_CONDITION_ATTRIBUTES) else base
+    partial = partial or condition_source is base
+    for attr in _JOIN_CONDITION_ATTRIBUTES:
+        values[attr] = getattr(condition_source, attr)
+    return JoinDefinition(view=over.view, **values), partial
+
+
+def _merge_explores(base: ExploreInfo, over: ExploreInfo, resolution: ExtendsResolution) -> ExploreInfo:
+    """
+    Looker `extends` semantics: parameters of `over` replace those of `base`,
+    joins are additive, and a join declared on both sides is merged with the
+    parameters of `over` winning.
+    """
+    sources: Dict[str, str] = {}
+
+    def source_of(explore: ExploreInfo, item: str) -> str:
+        return explore.sources.get(item, explore.name)
+
+    values = {}
+    for attr in _INHERITED_ATTRIBUTES:
+        winner = over if _is_set(getattr(over, attr)) else base
+        if winner is over and _is_set(getattr(base, attr)) and getattr(base, attr) != getattr(over, attr):
+            resolution.overridden_settings.append((attr, source_of(over, attr), source_of(base, attr)))
+        values[attr] = getattr(winner, attr)
+        if _is_set(values[attr]):
+            sources[attr] = source_of(winner, attr)
+
+    hidden_from = over if over.hidden_explicit else base
+    if hidden_from.hidden_explicit:
+        sources['hidden'] = source_of(hidden_from, 'hidden')
+
+    joins: Dict[str, JoinDefinition] = {join.view: join for join in base.joins}
+    for join in base.joins:
+        sources[f"join:{join.view}"] = source_of(base, f"join:{join.view}")
+    for join in over.joins:
+        key = f"join:{join.view}"
+        if join.view in joins:
+            joins[join.view], partial = _merge_join(joins[join.view], join)
+            resolution.overridden_joins.append((join.view, source_of(over, key), source_of(base, key), partial))
+        else:
+            joins[join.view] = join
+        sources[key] = source_of(over, key)
+
+    return ExploreInfo(
+        name=over.name,
+        file_path=over.file_path,
+        base_view=values['view_name'] or values['from_view'] or over.name,
+        joins=list(joins.values()),
+        hidden=hidden_from.hidden,
+        hidden_explicit=hidden_from.hidden_explicit,
+        extends=list(over.extends),
+        extension_required=over.extension_required,  # `extension` is not inherited
+        sources=sources,
+        **values
+    )
+
+
+def resolve_explore_extends(
+    explore: ExploreInfo,
+    definitions: Dict[str, List[ExploreInfo]]
+) -> ExtendsResolution:
+    """
+    Merge an explore with everything it inherits through `extends:`
+
+    Parents are merged in list order (a later parent wins over an earlier
+    one), each parent after its own chain was resolved, and the explore
+    itself is applied last. `definitions` comes from `load_explores`.
+
+    When a parent is missing, declared more than once, or the chain is
+    circular, `problem` says why and `explore` is returned unchanged.
+    """
+    resolution = ExtendsResolution(explore=explore)
+
+    def resolve(current: ExploreInfo, path: Tuple[str, ...]) -> ExploreInfo:
+        merged: Optional[ExploreInfo] = None
+        for parent_name in current.extends:
+            if parent_name in path or parent_name == current.name:
+                raise _Unresolved("circular extends: " + ' → '.join(path + (current.name, parent_name)))
+            candidates = definitions.get(parent_name, [])
+            if not candidates:
+                raise _Unresolved(f"explore `{parent_name}` was not found under --looker-repo")
+            if len(candidates) > 1:
+                raise _Unresolved(
+                    f"explore `{parent_name}` is defined more than once ("
+                    + ', '.join(sorted({c.file_path for c in candidates})) + ")"
+                )
+            parent = resolve(candidates[0], path + (current.name,))
+            if parent_name not in resolution.ancestors:
+                resolution.ancestors.append(parent_name)
+            merged = parent if merged is None else _merge_explores(merged, parent, resolution)
+        return current if merged is None else _merge_explores(merged, current, resolution)
+
+    try:
+        resolution.explore = resolve(explore, ())
+    except _Unresolved as e:
+        return ExtendsResolution(explore=explore, problem=str(e))
+    return resolution
 
 
 def find_explores_using_views(

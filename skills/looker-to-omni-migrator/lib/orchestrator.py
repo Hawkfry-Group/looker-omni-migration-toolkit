@@ -46,15 +46,25 @@ as MANUAL ACTION REQUIRED in the report, the console and
    references, Liquid, `foreign_key`/`sql` joins or unsupported join or
    relationship types are left out and reported (with everything that
    depends on them)
+   When the explore has `extends:`, the parent chain is resolved first
+   (parents may live in any `.lkml` file) and the merged explore is migrated:
+   the topic gets `extends:` plus the complete merged joins and settings.
+   A parent that cannot be found leaves the explore unmerged and reported.
 3. Carry `access_filter` -> `access_filters`, `sql_always_where` ->
    `always_where_sql`, `sql_always_having` -> `always_having_sql`,
-   `required_access_grants`, `hidden` and `group_label`. Access-related
-   items are also listed as MANUAL ACTION REQUIRED. Not carried, reported:
-   `always_filter`, `conditionally_filter`, `always_join`, join
+   `required_access_grants`, `hidden` and `group_label`. `always_filter`
+   becomes required `default_filters` entries for the expressions that
+   translate with confidence. Access-related and carried items are also
+   listed as MANUAL ACTION REQUIRED. Not carried, reported: any other
+   `always_filter` entry, `conditionally_filter`, `always_join`, join
    `required_joins`, join `required_access_grants`, field restrictions.
-4. Write `{explore}.topic.yaml` and `{explore}.relationships` (a plain YAML
-   list; removed if it would be empty) to the output dir and
-   `{explore}_explore.md` to the reports dir
+   An explore with `extension: required` (or `template=True`) gets
+   `template: true`.
+4. Write `{explore}.topic.yaml` to the output dir, with the join definitions
+   under its `relationships:` key, and `{explore}_explore.md` to the reports
+   dir. With `relationships_file=True` the join definitions go to
+   `{explore}.relationships` instead (a plain YAML list; removed if it would
+   be empty), and conflicts with other relationships files are reported.
 
 ## Usage
 
@@ -85,10 +95,12 @@ from .context_loader import get_fields_for_view, load_migration_context
 from .explore_analyzer import (
     ExploreInfo,
     JoinDefinition,
-    find_explore_files,
+    ExtendsResolution,
     find_explores_using_views,
+    find_extending_explores,
     generate_explore_report,
-    parse_explore_file,
+    load_explores,
+    resolve_explore_extends,
     suggest_topic_divisions,
 )
 from .file_generators import ConversionReportBuilder, FileGenerator, MergeError
@@ -104,6 +116,7 @@ from .rule_applier import (
     normalize_tag,
     phase_tag,
     status_tag,
+    translate_date_filter_expression,
     translate_filter_expression,
 )
 
@@ -118,6 +131,11 @@ JOIN_TYPE_MAP = {
     'cross': 'cross',
 }
 RELATIONSHIP_TYPES = {'many_to_one', 'one_to_one', 'one_to_many', 'many_to_many'}
+
+# always_filter on a date: dimension types, and the dimension_group timeframes
+# that filter on the underlying timestamp (week, month, ... filter a truncated value)
+DATE_DIMENSION_TYPES = {'date', 'date_time', 'time'}
+DATE_FILTER_TIMEFRAMES = ('date', 'time', 'raw')
 
 _FIELD_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\}')
 _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_\-]*')
@@ -176,6 +194,7 @@ class MigrationOrchestrator:
         )
 
         self._view_cache: Dict[str, Optional[LookerView]] = {}
+        self._explore_cache: Optional[Tuple[Dict[str, List[ExploreInfo]], Dict[str, List[str]]]] = None
 
         # Raises ValueError on duplicate grant names
         self.access_grants = load_access_grants(str(looker_repo))
@@ -803,13 +822,23 @@ class MigrationOrchestrator:
     # Explore migration
     # ==================================================================
 
-    def migrate_explore(self, explore_name: str, topic_name: Optional[str] = None) -> MigrationResult:
+    def migrate_explore(
+        self,
+        explore_name: str,
+        topic_name: Optional[str] = None,
+        relationships_file: bool = False,
+        template: bool = False
+    ) -> MigrationResult:
         """
-        Migrate a Looker explore to an Omni topic + relationships file
+        Migrate a Looker explore to an Omni topic
 
         Args:
             explore_name: Name of the Looker explore (e.g., "order_items")
             topic_name: Optional output name (defaults to explore_name)
+            relationships_file: Write the joins to a separate
+                `{topic}.relationships` file instead of the topic's own
+                `relationships:` key
+            template: Force `template: true` on the topic
         """
         writes_before = len(self.file_generator.planned_writes)
         issues: List[str] = []
@@ -823,14 +852,18 @@ class MigrationOrchestrator:
             if not explore_info:
                 raise ValueError(f"Explore '{explore_name}' not found in Looker repository")
             print(f"      ✓ Found: {explore_info.file_path}")
+            manual: List[Tuple[str, str]] = []  # (title, details) -> report + issues
+            carried: List[str] = []
+
+            # Inheritance: from here on explore_info is the merged explore
+            declared = explore_info
+            explore_info, inheritance = self._resolve_inheritance(declared, manual)
             print(f"      ✓ Base view: {explore_info.base_view}")
             print(f"      ✓ Joins: {len(explore_info.joins)}")
 
             print("\n[2/4] Building Omni topic...")
             topic_name = topic_name or explore_name
             base_view = explore_info.base_view
-            manual: List[Tuple[str, str]] = []  # (title, details) -> report + issues
-            carried: List[str] = []
 
             if refinement_files:
                 manual.append((
@@ -871,11 +904,9 @@ class MigrationOrchestrator:
                     carried.append(f"{looker_key} → topic `{omni_key}`")
                     manual.append((f"{looker_key} (carried)", f"Verify `{value}` returns the same rows in Omni."))
             if explore_info.always_filter:
-                manual.append((
-                    "always_filter (NOT carried)",
-                    f"Looker always_filter: `{self._describe_filter_block(explore_info.always_filter)}`. "
-                    f"Recreate with Omni `default_filters` or `always_where_filters` as appropriate."
-                ))
+                default_filters = self._build_default_filters(explore_info, set(skipped), manual, carried)
+                if default_filters:
+                    topic_extra['default_filters'] = default_filters
             if explore_info.conditionally_filter:
                 manual.append((
                     "conditionally_filter (NOT carried)",
@@ -925,11 +956,17 @@ class MigrationOrchestrator:
                         f"Looker always adds {', '.join(join.required_joins)} when `{join.view}` is used. "
                         f"Check the Omni join path produces the same rows."
                     ))
-            if explore_info.extends:
-                manual.append((
-                    "Explore inheritance (extends)",
-                    f"Explore extends {', '.join(explore_info.extends)}; inherited joins and settings were not merged."
-                ))
+            if inheritance is not None:
+                topic_extra['extends'] = list(declared.extends)
+                carried.append(
+                    f"extends: [{', '.join(declared.extends)}] → topic `extends`, "
+                    f"with the merged joins and settings written into this topic"
+                )
+
+            extenders = find_extending_explores(explore_name, self._load_explores()[0])
+            is_template, topic_type = self._template_decision(declared, extenders, template, manual)
+            if is_template:
+                topic_extra['template'] = True
 
             ai_context_lines = [
                 f"This topic provides access to {explore_info.label or explore_name} data.",
@@ -956,19 +993,24 @@ class MigrationOrchestrator:
             )
             print(f"      ✓ Topic: {topic_name} ({len(relationships)} join(s), {len(skipped)} skipped)")
 
-            # Same view pair joined differently by another explore's relationships file
             relationships_path = self.omni_repo / f"{topic_name}.relationships"
-            for conflict in self._relationship_conflicts(relationships, exclude=relationships_path):
-                manual.append(("Conflicting relationship", conflict))
+            if relationships_file:
+                # Same view pair joined differently by another explore's relationships file.
+                # Topic-scoped relationships only apply to their own topic, so no check there.
+                for conflict in self._relationship_conflicts(relationships, exclude=relationships_path):
+                    manual.append(("Conflicting relationship", conflict))
+            elif relationships:
+                topic.relationships = relationships
 
             report = self._build_explore_report(
-                explore_name, topic_name, explore_info, relationships, skipped, carried, manual
+                explore_name, topic_name, explore_info, relationships, skipped, carried, manual,
+                relationships_file=relationships_file, topic_type=topic_type, inheritance=inheritance
             )
 
             # Render everything before writing anything
             topic_content = self.file_generator.render_topic_yaml(topic)
             relationships_content = None
-            if relationships:
+            if relationships and relationships_file:
                 header = [
                     f"Relationships migrated from Looker explore: {explore_name}",
                     f"Base view: {base_view}. Joins: {len(relationships)}.",
@@ -977,7 +1019,7 @@ class MigrationOrchestrator:
                     header.append(f"Not migrated (see {topic_name}_explore.md): {', '.join(skipped)}")
                 relationships_content = self.file_generator.render_relationships_yaml(relationships, header)
 
-            print("\n[3/4] Writing topic and relationships files...")
+            print("\n[3/4] Writing topic file...")
             topic_path = self.file_generator.write_file(self.omni_repo / f"{topic_name}.topic.yaml", topic_content)
             print(f"      ✓ Topic: {topic_path}")
 
@@ -986,7 +1028,8 @@ class MigrationOrchestrator:
                 written_relationships = self.file_generator.write_file(relationships_path, relationships_content)
                 print(f"      ✓ Relationships: {written_relationships}")
             else:
-                # A previous run's file would keep joins that no longer exist
+                # A previous run's file would keep joins that no longer exist,
+                # or repeat the joins that now live in the topic file
                 self.file_generator.remove_file(relationships_path)
 
             print("\n[4/4] Writing explore migration report...")
@@ -1010,6 +1053,12 @@ class MigrationOrchestrator:
         except Exception as e:
             return self._failure(explore_name, e, issues, writes_before, "EXPLORE MIGRATION FAILED")
 
+    def _load_explores(self) -> Tuple[Dict[str, List[ExploreInfo]], Dict[str, List[str]]]:
+        """Every explore under --looker-repo (parsed once per run), see `load_explores`"""
+        if self._explore_cache is None:
+            self._explore_cache = load_explores(str(self.looker_repo))
+        return self._explore_cache
+
     def _find_explore(self, explore_name: str) -> Tuple[Optional[ExploreInfo], List[str]]:
         """
         The explore definition and any refinement files (`explore: +name`).
@@ -1017,26 +1066,232 @@ class MigrationOrchestrator:
         Raises:
             ValueError: the explore is defined in more than one file
         """
-        found: List[ExploreInfo] = []
-        refinements: List[str] = []
-        for file_path in find_explore_files(str(self.looker_repo)):
-            try:
-                explores = parse_explore_file(file_path)
-            except Exception as e:
-                print(f"      ⚠️  Could not parse {file_path}: {e}")
-                continue
-            for exp in explores:
-                if exp.name == explore_name:
-                    found.append(exp)
-                elif exp.name == f"+{explore_name}":
-                    refinements.append(file_path)
+        definitions, refinements = self._load_explores()
+        found = definitions.get(explore_name, [])
         if len(found) > 1:
             raise ValueError(
                 f"Explore '{explore_name}' is defined more than once: "
                 + ', '.join(sorted({e.file_path for e in found}))
                 + ". Point --looker-repo at a single project."
             )
-        return (found[0] if found else None), refinements
+        return (found[0] if found else None), list(refinements.get(explore_name, []))
+
+    def _resolve_inheritance(
+        self,
+        declared: ExploreInfo,
+        manual: List[Tuple[str, str]]
+    ) -> Tuple[ExploreInfo, Optional[ExtendsResolution]]:
+        """
+        Merge the explore with its `extends:` chain
+
+        Returns the explore to migrate (the merged one, or `declared` when it
+        extends nothing or the chain cannot be resolved) and the resolution
+        when a merge happened. Everything that needs a human goes to `manual`.
+        """
+        if not declared.extends:
+            return declared, None
+        definitions, refinements = self._load_explores()
+        parents = ', '.join(declared.extends)
+        resolution = resolve_explore_extends(declared, definitions)
+        if resolution.problem:
+            manual.append((
+                "Explore inheritance (extends)",
+                f"Explore extends {parents}; inherited joins and settings were not merged: {resolution.problem}. "
+                f"`extends:` was not written to the topic."
+            ))
+            return declared, None
+
+        manual.append((
+            "Explore inheritance (extends, merged)",
+            f"The topic extends {parents} and also carries the merged joins and settings. "
+            f"Migrate the parent explore(s) too ({', '.join(f'`--explore {p}`' for p in declared.extends)}): "
+            f"`extends:` needs a topic of that name in the Omni model."
+        ))
+        if len(declared.extends) > 1:
+            manual.append((
+                "Multiple parents in extends",
+                f"Looker gives priority to the last explore in `extends: [{parents}]`, and the merged result written "
+                f"to this topic follows that. Omni documents `extends` with a single topic: verify the topic "
+                f"validates, or keep only one parent in `extends:`."
+            ))
+        for name in resolution.ancestors:
+            if refinements.get(name):
+                manual.append((
+                    "Refinements (explore: +name) NOT applied",
+                    f"Parent explore `{name}` has refinements that were not merged: " + ', '.join(refinements[name])
+                ))
+        for join, by, inherited_from, partial in resolution.overridden_joins:
+            if partial:
+                manual.append((
+                    f"Join {join}: partial override of an inherited join",
+                    f"`{by}` redeclares join `{join}` inherited from `{inherited_from}` without all of its parameters. "
+                    f"The parameters it leaves out were kept from `{inherited_from}`; verify the merged join."
+                ))
+        for attribute, by, inherited_from in resolution.overridden_settings:
+            if attribute == 'access_filters':
+                manual.append((
+                    "Access filters: child replaces the parent's",
+                    f"Both `{by}` and `{inherited_from}` define access_filter. Only those of `{by}` were written; "
+                    f"verify that Looker does not also apply those of `{inherited_from}`."
+                ))
+        return resolution.explore, resolution
+
+    @staticmethod
+    def _template_decision(
+        declared: ExploreInfo,
+        extenders: List[str],
+        forced: bool,
+        manual: List[Tuple[str, str]]
+    ) -> Tuple[bool, str]:
+        """Whether the topic is a template (`template: true`), and the reason for the report"""
+        extended_by = ', '.join(f"`{name}`" for name in extenders)
+        if forced:
+            return True, "template (`template: true`), forced with `--template`"
+        if declared.extension_required and extenders:
+            return True, (f"template (`template: true`): the explore has `extension: required` "
+                          f"and is extended by {extended_by}")
+        if declared.extension_required:
+            manual.append((
+                "Template topic is not extended",
+                "The explore has `extension: required`, so the topic was written with `template: true`, but no "
+                "explore under --looker-repo extends it. A template topic cannot be used on its own."
+            ))
+            return True, ("template (`template: true`): the explore has `extension: required` "
+                          "(no explore under --looker-repo extends it)")
+        if extenders:
+            return False, (f"normal topic: extended by {extended_by}, but without `extension: required` the explore "
+                           f"is usable on its own in Looker. Pass `--template` if it is only a base")
+        return False, "normal topic"
+
+    def _build_default_filters(
+        self,
+        explore_info: ExploreInfo,
+        skipped: Set[str],
+        manual: List[Tuple[str, str]],
+        carried: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Looker always_filter -> required Omni default filters
+
+        A filter is written only when its field resolves to a view of the
+        topic and its expression is one of the forms translated with
+        confidence; every other filter is reported with the Looker expression.
+        """
+        filters: Dict[str, Dict[str, Any]] = {}
+        not_carried: List[str] = []
+        pairs = extract_measure_filters(explore_info.always_filter) \
+            if isinstance(explore_info.always_filter, dict) else []
+        if not pairs:
+            not_carried.append(f"`{explore_info.always_filter}`: no `filters:` could be read from the block")
+
+        not_carried_fields: List[str] = []
+        for looker_field, expression in pairs:
+            quoted = f'`{looker_field}: "{"" if expression is None else expression}"`'
+            key, condition, reason = self._translate_always_filter(explore_info, skipped, looker_field, expression)
+            if reason is None and key in filters:
+                reason = f"`{key}` already has a filter from another always_filter entry"
+            if reason:
+                not_carried.append(f"{quoted}: {reason}")
+                not_carried_fields.append(quoted)
+                continue
+            filters[key] = {**condition, 'required': True}
+            shown = ', '.join(
+                f"{operator}: " + (f"[{', '.join(map(str, value))}]" if isinstance(value, list) else str(value))
+                for operator, value in condition.items()
+            )
+            carried.append(f"always_filter {quoted} → topic `default_filters` on `{key}` (`{shown}`, `required: true`)")
+
+        if filters:
+            manual.append((
+                "always_filter (carried)",
+                "Written as required `default_filters` (users can change the value, not remove the filter) on "
+                + ', '.join(f"`{key}`" for key in filters)
+                + ". Verify the fields exist under these names in Omni and the filters return the same rows."
+            ))
+        if not_carried:
+            manual.append((
+                "always_filter (NOT carried)",
+                "Looker always_filter not written"
+                + (": " + ', '.join(not_carried_fields) if not_carried_fields else "")
+                + ". Recreate each one as an Omni `default_filters` entry with `required: true` (it needs a value).\n"
+                + '\n'.join(f"- {item}" for item in not_carried)
+            ))
+        return filters
+
+    def _translate_always_filter(
+        self,
+        explore_info: ExploreInfo,
+        skipped: Set[str],
+        looker_field: str,
+        expression: Any
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+        """(Omni filter key, condition, None) or (None, None, reason it is not translated)"""
+        view_ref, _, field_name = str(looker_field).partition('.')
+        if not field_name:
+            return None, None, "the field is not view-qualified (`view.field`)"
+
+        joins = {join.view: join for join in explore_info.joins}
+        if view_ref in (explore_info.name, explore_info.base_view):
+            looker_view = omni_view = explore_info.base_view
+        elif view_ref in joins:
+            if view_ref in skipped:
+                return None, None, f"join `{view_ref}` was not migrated, so the field is not in the topic"
+            looker_view, omni_view = joins[view_ref].source_view, view_ref
+        else:
+            return None, None, f"`{view_ref}` is not part of the explore"
+
+        if expression is None or not str(expression).strip():
+            return None, None, "it has no value (a required default filter needs one)"
+
+        parsed_view = self._cached_view(looker_view)
+        if parsed_view is None:
+            return None, None, f"view `{looker_view}` was not found under --looker-repo, so the field type is unknown"
+        omni_field, kind, reason = self._filter_target(parsed_view, field_name)
+        if reason:
+            return None, None, reason
+
+        if kind == 'date':
+            condition, reason = translate_date_filter_expression(expression)
+            if condition is None:
+                return None, None, reason
+        else:
+            condition = translate_filter_expression(expression, kind)
+            # Only "is <value>" (strings: also a list of values) is carried
+            value = condition.get('is') if condition and set(condition) == {'is'} else None
+            if value is None or (kind == 'number' and isinstance(value, list)):
+                return None, None, "the expression is outside the forms translated automatically"
+        return f"{omni_view}.{omni_field}", condition, None
+
+    @staticmethod
+    def _filter_target(looker_view: LookerView, field_name: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Omni field name and filter grammar ('string', 'number' or 'date') for
+        a Looker field used in always_filter, or the reason it is not handled.
+        A dimension_group timeframe (`created_date`) maps to the group's Omni
+        name (`created`).
+        """
+        if field_name in looker_view.dimensions:
+            looker_type = looker_view.dimensions[field_name].get('type')
+            if looker_type in DATE_DIMENSION_TYPES:
+                return field_name, 'date', None
+            kind = filter_kind(looker_type)
+            if kind in ('string', 'number'):
+                return field_name, kind, None
+            return None, None, f"dimension type `{looker_type}` is not translated automatically"
+        if field_name in looker_view.measures:
+            return None, None, "the field is a measure (a filter on a measure is applied after aggregation)"
+        for group, data in looker_view.dimension_groups.items():
+            if not field_name.startswith(f"{group}_") or data.get('type') != 'time':
+                continue
+            timeframe = field_name[len(group) + 1:]
+            if timeframe not in DATE_FILTER_TIMEFRAMES:
+                return None, None, (f"timeframe `{timeframe}` of dimension group `{group}`: only the "
+                                    f"{', '.join(DATE_FILTER_TIMEFRAMES)} timeframes are translated")
+            if data.get('timeframes') and timeframe not in data['timeframes']:
+                return None, None, f"timeframe `{timeframe}` is not in the `timeframes:` of dimension group `{group}`"
+            return group, 'date', None
+        return None, None, (f"the field is not defined in view `{looker_view.view_name}` as a dimension or a "
+                            f"dimension group timeframe (it may be inherited or a filter-only field)")
 
     def _build_relationships(
         self,
@@ -1217,7 +1472,10 @@ class MigrationOrchestrator:
         relationships: List[Dict[str, Any]],
         skipped: List[str],
         carried: List[str],
-        manual: List[Tuple[str, str]]
+        manual: List[Tuple[str, str]],
+        relationships_file: bool = False,
+        topic_type: str = "normal topic",
+        inheritance: Optional[ExtendsResolution] = None
     ) -> str:
         lines = [
             f"# Explore Migration: {explore_name}",
@@ -1227,6 +1485,7 @@ class MigrationOrchestrator:
             f"- **Source file**: `{explore_info.file_path}`",
             f"- **Base View**: {explore_info.base_view}",
             f"- **Topic**: {topic_name}",
+            f"- **Topic type**: {topic_type}",
             f"- **Joins migrated**: {len(relationships)} of {len(explore_info.joins)}",
             "",
         ]
@@ -1242,9 +1501,15 @@ class MigrationOrchestrator:
         lines += [f"- {item}" for item in carried] or ["(no row-level restrictions, access grants or presentation settings)"]
         lines.append("")
 
+        if inheritance is not None:
+            lines += self._inheritance_report_lines(explore_name, explore_info, inheritance)
+
         lines += ["## Join Definitions", ""]
         for join in explore_info.joins:
             status = "NOT migrated" if join.view in skipped else "migrated"
+            origin = explore_info.sources.get(f"join:{join.view}", explore_name)
+            if origin != explore_name:
+                status += f", inherited from {origin}"
             lines.append(f"### {join.view} ({status})")
             if join.is_aliased:
                 lines.append(f"- **From**: {join.source_view}")
@@ -1257,9 +1522,18 @@ class MigrationOrchestrator:
             lines.append("")
 
         lines += ["## Generated Files", ""]
-        lines.append(f"1. **{topic_name}.topic.yaml** - topic with field list and join tree")
-        if relationships:
-            lines.append(f"2. **{topic_name}.relationships** - join definitions (YAML list)")
+        if relationships_file:
+            lines.append(f"1. **{topic_name}.topic.yaml**: topic with field list and join tree")
+            if relationships:
+                lines.append(f"2. **{topic_name}.relationships**: join definitions (YAML list)")
+            relationships_note = ("- Relationships files are model-wide in Omni: check for conflicting joins "
+                                  "between the same views")
+        else:
+            lines.append(f"1. **{topic_name}.topic.yaml**: topic with field list, join tree and the join "
+                         f"definitions (top-level `relationships:`)")
+            relationships_note = ("- Relationships are topic-scoped (the topic's own `relationships:` key): they apply "
+                                  "to this topic only. Use `--relationships-file` to write them to a separate file "
+                                  "for the model-wide relationships file instead")
         lines += [
             "",
             "## Notes",
@@ -1267,11 +1541,49 @@ class MigrationOrchestrator:
             "- Topic uses `all_views.*` and excludes fields tagged `table_key`",
             "- Looker join types mapped: left_outer → always_left, inner → inner, "
             "full_outer → full_outer, cross → cross (other types are not migrated)",
-            "- Relationships files are model-wide in Omni: check for conflicting joins between the same views",
+            relationships_note,
             "- Cross-view references stay `${view.field}`",
             "",
         ]
         return '\n'.join(lines)
+
+    @staticmethod
+    def _inheritance_report_lines(explore_name: str, merged: ExploreInfo, inheritance: ExtendsResolution) -> List[str]:
+        """Report section: what the topic inherited through `extends:` and from where"""
+        labels = {
+            'access_grants': 'required_access_grants', 'access_filters': 'access_filter',
+            'from_view': 'from',
+        }
+        lines = [
+            "## Inheritance (extends)",
+            "",
+            f"- **Extends**: {', '.join(merged.extends)}",
+            f"- **Explores merged** (Looker order, later wins, this explore last): "
+            f"{', '.join(inheritance.ancestors + [explore_name])}",
+            "- The topic carries the complete merged result because a child topic's `joins:` replaces the "
+            "parent's in Omni (Looker adds them).",
+            "",
+        ]
+        inherited = {item: origin for item, origin in merged.sources.items() if origin != explore_name}
+        joins = [f"`{item[5:]}` (from {origin})" for item, origin in inherited.items() if item.startswith('join:')]
+        settings = [f"{labels.get(item, item)} (from {origin})" for item, origin in inherited.items()
+                    if not item.startswith('join:')]
+        lines.append("**Inherited joins**: " + (', '.join(joins) or '(none)'))
+        lines.append("")
+        lines.append("**Inherited settings**: " + (', '.join(settings) or '(none)'))
+        lines.append("")
+        overrides = [
+            f"join `{join}`: `{by}` overrides `{origin}`" + (" (partial, parameters merged)" if partial else "")
+            for join, by, origin, partial in inheritance.overridden_joins
+        ] + [
+            f"{labels.get(attribute, attribute)}: `{by}` overrides `{origin}`"
+            for attribute, by, origin in inheritance.overridden_settings
+        ]
+        if overrides:
+            lines.append("**Overrides**:")
+            lines += [f"- {item}" for item in overrides]
+            lines.append("")
+        return lines
 
     # ==================================================================
     # Helpers

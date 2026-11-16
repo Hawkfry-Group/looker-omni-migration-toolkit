@@ -111,7 +111,11 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `View is refined in ...; refinements are not applied` | Apply the refinement by hand |
 | `View extends ...; inherited fields are not included` | Migrate the base view too, or copy the fields |
 | `Join x (NOT migrated): sql_on uses Liquid...` | Write the relationship by hand |
-| `always_filter (NOT carried)` | Recreate with an Omni topic filter |
+| `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
+| `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |
+| `Explore inheritance (extends)` ... `were not merged` | A parent explore is missing, declared twice or circular. Point `--looker-repo` at the whole project, or merge by hand |
+| `Explore inheritance (extends, merged)` | Migrate the parent explores too, so the topics in `extends:` exist |
+| `Template topic is not extended` | The explore has `extension: required` but nothing extends it. Extend the topic or drop it |
 
 ## Other issues
 
@@ -133,7 +137,7 @@ A view run merges into the existing `{view}.view.yaml` in `--omni-repo`. Delete 
 
 ### The relationships file disappeared
 
-An explore run that produces no joins removes the old `{explore}.relationships`.
+Explore runs now write the join definitions inside `{explore}.topic.yaml` (under `relationships:`) and remove a `{explore}.relationships` left by an earlier run. Pass `--relationships-file` to keep the separate file; in that mode a run that produces no joins removes it.
 
 ### Can't find the output files
 

@@ -1,6 +1,6 @@
 ---
 name: looker-to-omni-migrator
-description: "Migrate Looker views and explores to Omni. Converts LookML views to Omni .view.yaml (or .query.view for derived tables) with a CSV controlling which fields are in scope, converts explores to Omni topics and relationships, writes a migration report per view and explore, and lists Looker access grants. Use when the user asks to migrate, convert or port a Looker view or explore to Omni."
+description: "Migrate Looker views and explores to Omni. Converts LookML views to Omni .view.yaml (or .query.view for derived tables) with a CSV controlling which fields are in scope, converts explores to Omni topics with their relationships, writes a migration report per view and explore, and lists Looker access grants. Use when the user asks to migrate, convert or port a Looker view or explore to Omni."
 ---
 
 # Looker to Omni Migrator
@@ -12,7 +12,7 @@ The CLI has three mutually exclusive modes:
 | Mode | Flag | Writes |
 |------|------|--------|
 | View migration | `--view NAME` | `{view}.view.yaml` (or `{view}.query.view` for a derived table) and `{view}.migration.md` |
-| Explore migration | `--explore NAME` | `{explore}.topic.yaml`, `{explore}.relationships` (only if at least one join converts) and `{explore}_explore.md` |
+| Explore migration | `--explore NAME` | `{explore}.topic.yaml` (joins and relationships) and `{explore}_explore.md`. With `--relationships-file`, the relationships go to `{explore}.relationships` instead. `--template` forces `template: true` |
 | Access grant listing | `--parse-access-grants` | `access_grants.md` |
 
 ## Instructions for Claude
@@ -60,6 +60,8 @@ Other flags:
 | `--unverified` | off | Tag output `unverified` instead of `verified`. |
 | `--dry-run` | off | Print what would be written or removed; write nothing. |
 | `--explore-analysis` | off | With `--view` only: also write `{view}_explore_analysis.md` for explores that use the view. |
+| `--relationships-file` | off | With `--explore` only: write the join definitions to `{explore}.relationships` instead of the topic file's `relationships:` key. |
+| `--template` | off | With `--explore` only: write `template: true` on the topic. Automatic for an explore with `extension: required`. |
 
 Exit codes:
 
@@ -102,7 +104,10 @@ Full rules: `rules/migration_rules.md`. Omni syntax: `rules/model_details_omni.m
 - **Measures.** `count`, `count_distinct`, `sum`, `average`, `min`, `max`, `median`, `list`, `percentile` become `aggregate_type`. `number`, `string`, `yesno`, `date` become calculated measures. Anything else (for example `running_total`, `percent_of_total`, `sum_distinct`) is not written: HIGH risk, manual. Measure `filters` are translated by field type, and a filter that cannot be translated stops the measure.
 - **Formats.** `decimal_N` becomes `number_N`, `percent_N` stays `percent_N`, `usd`/`eur`/`gbp` (and `_0`) become `usdcurrency_2` and so on, and `id` stays `id`. Other names and custom `value_format` strings are not written (MEDIUM risk).
 - **Derived tables.** SQL derived tables become `{view}.query.view` with `sql:`; Liquid or `${...}` references in the SQL stop the view (exit 1, nothing written). Native derived tables become `{view}.query.view` with `query:` (`fields`, `base_view`, `topic`, `filters`, `sorts`, `limit`).
-- **Explores.** One topic per explore, with `fields: [all_views.*, "-tag:table_key"]` and joins nested by dependency. `access_filter`, `sql_always_where`, `sql_always_having`, `required_access_grants`, `hidden` and `group_label` are carried; `always_filter`, `conditionally_filter`, `always_join`, `required_joins`, field restrictions and join-level grants are reported only.
+- **Explores.** One topic per explore, with `fields: [all_views.*, "-tag:table_key"]` and joins nested by dependency. The join definitions are written in the topic file under `relationships:` (topic-scoped); `--relationships-file` writes them to a separate `{explore}.relationships` instead. `access_filter`, `sql_always_where`, `sql_always_having`, `required_access_grants`, `hidden` and `group_label` are carried; `conditionally_filter`, `always_join`, `required_joins`, field restrictions and join-level grants are reported only.
+- **always_filter.** Becomes a `default_filters` entry with `required: true` (changeable, not removable) when the expression is `N days ago for N days` (also weeks, months) on a date field, a value or comma list on a string field, or one number on a number field. A timeframe field such as `created_date` is keyed by the dimension group's Omni name (`created`). Any other expression, or an empty value, is not written and is reported with the Looker expression.
+- **Explore extends.** The parent chain is resolved across the whole `--looker-repo`. The topic gets `extends: [parent]` and the complete merged joins, relationships and settings (Looker semantics: child overrides parent, joins are additive, a later parent wins). If a parent cannot be found, nothing is merged and it is reported.
+- **Template topics.** An explore with `extension: required` becomes a topic with `template: true`. An explore that is extended without `extension: required` stays a normal topic; `--template` forces it. The report states the choice and the reason.
 - **Access grants.** Grant names are copied onto fields and topics. The grant definitions and user attributes must be created in Omni by hand.
 - **Canonical mappings.** None by default. From `--config` only; applied to labels, with old-term synonyms added. Descriptions are not changed.
 
@@ -112,7 +117,9 @@ Full rules: `rules/migration_rules.md`. Omni syntax: `rules/model_details_omni.m
 - Model `include:` boundaries are ignored: every `*.lkml` under `--looker-repo` is searched. Duplicate view, explore or grant names stop the run.
 - Refinements (`view: +name`, `explore: +name`) are detected and reported, not applied.
 - Each file is written atomically, but a run is not: if a run fails partway, files written earlier in that run stay.
-- Omni relationships are model-wide; per-explore `.relationships` files can conflict (the CLI warns when it sees a conflict in the same directory).
+- With `--relationships-file`, Omni relationships are model-wide; per-explore `.relationships` files can conflict (the CLI warns when it sees a conflict in the same directory). The default topic-scoped relationships do not have this problem.
+- `always_filter` expressions outside the short translated list (for example `N days`, `last month`, `today`, negations, comparisons) are reported, not converted. `conditionally_filter` has no Omni equivalent.
+- An extending topic refers to its parent topic by name, so the parent explores must be migrated too. Several parents in one `extends:` and partial overrides of an inherited join are converted and flagged for review.
 - Explore mode does not rewrite join SQL for fields that a merge renamed.
 - `omni_view` / `omni_field` CSV columns are tracking only.
 - References to Looker timeframe fields such as `${created_date}` are reported, not rewritten.

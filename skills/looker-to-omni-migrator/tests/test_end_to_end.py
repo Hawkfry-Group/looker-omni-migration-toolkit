@@ -271,7 +271,9 @@ class TestExploreMigration:
         assert topic["always_where_sql"] == "${order_items.status} != 'Cancelled'"
         assert topic["required_access_grants"] == ["can_view_financials"]
 
-        rels = load_yaml(tmp_path / TOPICS / "order_items.relationships")
+        # Join definitions live in the topic file (topic-scoped relationships)
+        assert not (tmp_path / TOPICS / "order_items.relationships").exists()
+        rels = topic["relationships"]
         assert isinstance(rels, list) and len(rels) == 5
         by_target = {r["join_to_view"]: r for r in rels}
         assert by_target["inventory_items"]["join_type"] == "inner"
@@ -282,7 +284,8 @@ class TestExploreMigration:
 
         report = (tmp_path / REPORTS / "order_items_explore.md").read_text()
         assert "MANUAL ACTION REQUIRED" in report
-        assert "always_filter (NOT carried)" in report
+        assert "always_filter (NOT carried)" in report  # "90 days" has no confirmed Omni form
+        assert "default_filters" not in topic
         assert "allowed_country" in report
         assert "department" in report  # grant user attribute from the registry
         assert "always_filter" in result.stdout
@@ -291,15 +294,14 @@ class TestExploreMigration:
         migrate_explore(tmp_path, "users")
         topic = load_yaml(tmp_path / TOPICS / "users.topic.yaml")
         assert topic["joins"] == {"user_order_facts": {}}
-        rels = load_yaml(tmp_path / TOPICS / "users.relationships")
-        assert [r["join_to_view"] for r in rels] == ["user_order_facts"]
+        assert [r["join_to_view"] for r in topic["relationships"]] == ["user_order_facts"]
         report = (tmp_path / REPORTS / "users_explore.md").read_text()
         assert "Join orders (NOT migrated)" in report and "Liquid" in report
 
     def test_aliased_join(self, tmp_path):
         migrate_explore(tmp_path, "events")
-        rels = load_yaml(tmp_path / TOPICS / "events.relationships")
-        assert rels == [{
+        topic = load_yaml(tmp_path / TOPICS / "events.topic.yaml")
+        assert topic["relationships"] == [{
             "join_from_view": "events",
             "join_to_view": "users",
             "join_to_view_as": "visitor",
@@ -308,7 +310,7 @@ class TestExploreMigration:
             "relationship_type": "many_to_one",
             "reversible": False,
         }]
-        assert load_yaml(tmp_path / TOPICS / "events.topic.yaml")["joins"] == {"visitor": {}}
+        assert topic["joins"] == {"visitor": {}}
 
     def test_unknown_explore_fails(self, tmp_path):
         result = run_cli("--explore", "nope", "--looker-repo", FIXTURE_REPO, cwd=tmp_path)
@@ -356,7 +358,8 @@ class TestCliContract:
         assert result.returncode == 0
         for flag in ("--view", "--explore", "--parse-access-grants", "--phase", "--owner", "--looker-repo",
                      "--omni-repo", "--omni-source-repo", "--config", "--default-schema", "--curated-folder",
-                     "--csv", "--unverified", "--dry-run", "--explore-analysis"):
+                     "--csv", "--unverified", "--dry-run", "--explore-analysis", "--relationships-file",
+                     "--template"):
             assert flag in result.stdout, flag
         for removed in ("--batch", "--skip-explore-analysis", "--verified "):
             assert removed not in result.stdout

@@ -7,7 +7,7 @@ A Claude Code skill and Python CLI that converts LookML views and explores into 
 | Input | Output |
 |-------|--------|
 | Looker view (`--view`) | `{view}.view.yaml`, or `{view}.query.view` for a derived table, plus `{view}.migration.md` |
-| Looker explore (`--explore`) | `{explore}.topic.yaml`, `{explore}.relationships` (when at least one join converts), plus `{explore}_explore.md` |
+| Looker explore (`--explore`) | `{explore}.topic.yaml` (joins and their relationships in one file), plus `{explore}_explore.md`. With `--relationships-file`, also `{explore}.relationships` |
 | Access grants (`--parse-access-grants`) | `access_grants.md` listing each grant, user attribute and allowed values |
 
 Default output locations, relative to where you run the CLI:
@@ -95,8 +95,11 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | `${field}`, `${view.field}` | unchanged |
 | `derived_table: { sql: ... }` | `{view}.query.view` with `sql:` |
 | `derived_table: { explore_source: ... }` | `{view}.query.view` with `query:` |
-| explore `join` | topic join plus `.relationships` entry |
+| explore `join` | topic join plus an entry under the topic's `relationships:` |
 | explore `access_filter`, `sql_always_where`, `sql_always_having` | topic `access_filters`, `always_where_sql`, `always_having_sql` |
+| explore `always_filter` (`N days ago for N days`, string values, a number) | topic `default_filters` entry with `required: true`; other expressions are reported |
+| explore `extends` | topic `extends`, with the merged joins and settings written into the topic |
+| explore `extension: required` | topic `template: true` |
 | `required_access_grants` | copied; grant definitions are MANUAL ACTION REQUIRED |
 
 Full rules: [rules/migration_rules.md](rules/migration_rules.md).
@@ -113,7 +116,9 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - Model `include:` boundaries are ignored: every `*.lkml` under `--looker-repo` is searched, and duplicate names stop the run.
 - LookML refinements are reported, not applied.
 - Each file is written atomically; a whole run is not.
-- Omni relationships are model-wide, so separate `.relationships` files can conflict.
+- Relationships are written topic-scoped. With `--relationships-file` they are model-wide in Omni, so separate `.relationships` files can conflict.
+- `always_filter` is translated for a small set of expressions only; named periods such as `last month`, and `N days`, are reported. `conditionally_filter` is reported only.
+- An extending topic needs its parent topic in the Omni model: migrate the parent explores too.
 - Explore mode does not rewrite join SQL for fields renamed by a merge.
 - The CSV `omni_view` / `omni_field` columns are tracking only.
 - References to Looker timeframe fields (for example `${created_date}`) are reported, not rewritten.

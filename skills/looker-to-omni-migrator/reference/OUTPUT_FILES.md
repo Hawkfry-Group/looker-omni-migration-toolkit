@@ -6,8 +6,8 @@
 <--omni-repo>/                    # default migration/staging/views (explore mode: .../topics)
 ├── {view}.view.yaml              # table-based view
 ├── {view}.query.view             # derived table
-├── {explore}.topic.yaml          # explore mode
-└── {explore}.relationships       # explore mode, only if at least one join converts
+├── {explore}.topic.yaml          # explore mode (joins and their relationships)
+└── {explore}.relationships       # explore mode with --relationships-file, only if at least one join converts
 <sibling>/reports/
 ├── {view}.migration.md
 ├── {view}_explore_analysis.md    # --explore-analysis
@@ -138,7 +138,7 @@ Migrated users from Looker to Omni as users. Converted 3 dimensions and 1 measur
 | Notes / Risks | `HIGH RISK` (field not written, missing primary key), `MEDIUM RISK` (format not migrated and similar), `INFO` (dependencies) |
 | Advanced Features Detected | Access grants, access filters, refinements, `extends`, parameters, derived tables, persistence; each with a status such as `CARRIED - MANUAL ACTION REQUIRED`, `NOT MIGRATED` or `CONVERTED` |
 
-## 3. Topic and relationships files
+## 3. Topic files and relationships
 
 From `--explore order_items` on the sample:
 
@@ -148,6 +148,13 @@ base_view: order_items
 label: Order Items
 description: Sales by item, with the customer who placed each order
 fields: [all_views.*, "-tag:table_key"]
+relationships:
+- join_from_view: order_items
+  join_to_view: users
+  join_type: always_left
+  on_sql: ${order_items.user_id} = ${users.id}
+  relationship_type: many_to_one
+  reversible: false
 joins:
   users: {}
 ai_context: |-
@@ -157,6 +164,8 @@ access_filters:
 - field: users.country
   user_attribute: allowed_country
 ```
+
+With `--relationships-file` the topic has no `relationships:` key and the same list is written to a separate file:
 
 ```yaml
 # order_items.relationships
@@ -170,14 +179,16 @@ access_filters:
   reversible: false
 ```
 
-- Topic keys the migrator can write: `base_view`, `label`, `description`, `fields`, `joins`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `required_access_grants`, `hidden`, `group_label`.
-- `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it.
-- Joins that were not migrated are listed in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`) and in the report.
-- If a run produces no joins, an older `{explore}.relationships` is removed.
+- Topic keys the migrator can write: `base_view`, `extends`, `template`, `label`, `group_label`, `description`, `fields`, `relationships`, `joins`, `default_filters`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `hidden`, `required_access_grants`.
+- `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it. It is written in both modes.
+- `default_filters` holds the explore's `always_filter` entries that could be translated, each with `required: true`.
+- `extends` is written when the explore's parent chain was resolved; the topic then also carries the merged joins, relationships and settings. `template: true` is written for an explore with `extension: required`, or with `--template`.
+- Joins that were not migrated are listed in the report and, with `--relationships-file`, in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`).
+- A `{explore}.relationships` left by an earlier run is removed when the run writes the relationships into the topic, or produces no joins.
 
 ### Explore report (`{explore}_explore.md`)
 
-Sections: Summary (explore, source file, base view, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Join Definitions (each join with type, relationship, SQL, and whether it was migrated), Generated Files, Notes.
+Sections: Summary (explore, source file, base view, topic type with the reason for `template: true` or a normal topic, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Inheritance (only when `extends` was merged: explores merged, inherited joins and settings with their origin, overrides), Join Definitions (each join with type, relationship, SQL, whether it was migrated and which explore it was inherited from), Generated Files, Notes.
 
 ## 4. Explore analysis report (`{view}_explore_analysis.md`)
 

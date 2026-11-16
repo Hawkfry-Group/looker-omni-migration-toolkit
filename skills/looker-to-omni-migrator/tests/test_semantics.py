@@ -129,13 +129,18 @@ def explore_repo(tmp_path):
 
 
 class TestExploreSemantics:
-    def migrate(self, tmp_path, repo, name="orders"):
+    def migrate(self, tmp_path, repo, name="orders", relationships_file=False):
+        """rels: the topic's own `relationships:` (default) or the separate file (relationships_file)"""
         orch = MigrationOrchestrator(skill_path=SKILL_ROOT, looker_repo=repo, omni_repo=tmp_path / "out" / "topics")
-        result = orch.migrate_explore(name)
+        result = orch.migrate_explore(name, relationships_file=relationships_file)
         assert result.success, result.error_message
         topic = load_yaml(tmp_path / "out" / "topics" / f"{name}.topic.yaml")
         rel_path = tmp_path / "out" / "topics" / f"{name}.relationships"
-        rels = load_yaml(rel_path) if rel_path.exists() else []
+        if relationships_file:
+            rels = load_yaml(rel_path) if rel_path.exists() else []
+        else:
+            assert not rel_path.exists()
+            rels = topic.get("relationships", [])
         report = (tmp_path / "out" / "reports" / f"{name}_explore.md").read_text()
         return result, topic, rels, report
 
@@ -203,10 +208,11 @@ class TestExploreSemantics:
             view: b { dimension: id {} }
             explore: a { join: b { sql_on: ${a.id} = ${b.id} ;; } }
         """)
-        _, _, rels, _ = self.migrate(tmp_path, repo, "a")
+        _, _, rels, _ = self.migrate(tmp_path, repo, "a", relationships_file=True)
         assert len(rels) == 1
+        assert (tmp_path / "out" / "topics" / "a.relationships").exists()
         model.write_text("view: a { dimension: id {} }\nexplore: a {}\n")
-        self.migrate(tmp_path, repo, "a")
+        self.migrate(tmp_path, repo, "a", relationships_file=True)
         assert not (tmp_path / "out" / "topics" / "a.relationships").exists()
 
     def test_conflicting_relationship_in_other_explore_reported(self, tmp_path):
@@ -217,8 +223,9 @@ class TestExploreSemantics:
             explore: a { join: b { sql_on: ${a.id} = ${b.id} ;; } }
             explore: a2 { from: a join: b { sql_on: ${a2.id} = ${b.other_id} ;; } }
         """)
-        self.migrate(tmp_path, repo, "a")
-        result, _, _, report = self.migrate(tmp_path, repo, "a2")
+        # Only with --relationships-file: topic-scoped relationships cannot conflict across files
+        self.migrate(tmp_path, repo, "a", relationships_file=True)
+        result, _, _, report = self.migrate(tmp_path, repo, "a2", relationships_file=True)
         assert "Conflicting relationship" in report
         assert any("Conflicting relationship" in i for i in result.issues)
 
@@ -708,7 +715,11 @@ class TestRound3:
         result = run_cli("--parse-access-grants", "--looker-repo", tmp_path, "--dry-run", cwd=tmp_path)
         assert "creating from scratch" not in result.stdout
 
-    def test_explore_files_rendered_before_writing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("renderer,relationships_file", [
+        ("render_topic_yaml", False),
+        ("render_relationships_yaml", True),
+    ])
+    def test_explore_files_rendered_before_writing(self, tmp_path, monkeypatch, renderer, relationships_file):
         write(tmp_path / "repo" / "m.model.lkml", """
             view: a { dimension: id {} }
             view: b { dimension: id {} }
@@ -718,8 +729,8 @@ class TestRound3:
 
         def boom(*args, **kwargs):
             raise RuntimeError("render failed")
-        monkeypatch.setattr(orch.file_generator, "render_relationships_yaml", boom)
-        result = orch.migrate_explore("a")
+        monkeypatch.setattr(orch.file_generator, renderer, boom)
+        result = orch.migrate_explore("a", relationships_file=relationships_file)
         assert not result.success
         assert not (tmp_path / "out").exists()
 

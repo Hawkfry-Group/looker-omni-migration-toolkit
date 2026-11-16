@@ -269,7 +269,29 @@ With that config, a field labelled "SKU Code" is labelled "Product Code". A fiel
 | Liquid in `sql_on` | join not migrated; original SQL in the report |
 | `access_filter` | topic `access_filters` |
 | `sql_always_where` | topic `always_where_sql` |
-| `always_filter` | reported only |
+| `always_filter: { filters: [orders.created_date: "7 days ago for 7 days"] }` | topic `default_filters`: `orders.created: { time_for_duration: [7 complete days ago, 7 days], required: true }` |
+| `always_filter` with a string value `global`, a list `a,b`, or a number `5` | `is: global`, `is: [a, b]`, `is: 5`, each with `required: true` |
+| `always_filter` with any other expression (`7 days`, `last month`, `today`, `-x`, `>5`) or no value | not written; reported with the Looker expression |
+| `conditionally_filter` | reported only |
+| `extends: [base]` | topic `extends: [base]` plus the merged joins, relationships and settings written into the topic |
+| `extension: required` (or `--template`) | topic `template: true` |
+
+Joins are written under the topic's `relationships:` key next to `joins:`:
+
+```yaml
+base_view: order_items
+relationships:
+- join_from_view: order_items
+  join_to_view: users
+  join_type: always_left
+  on_sql: ${order_items.user_id} = ${users.id}
+  relationship_type: many_to_one
+  reversible: false
+joins:
+  users: {}
+```
+
+`--relationships-file` writes the same list to `{explore}.relationships` instead.
 
 ## See also
 

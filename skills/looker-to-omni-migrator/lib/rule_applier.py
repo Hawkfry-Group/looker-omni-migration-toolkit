@@ -372,13 +372,50 @@ def translate_filter_expression(expression: Any, kind: Optional[str] = 'string')
     return {key: values[0] if len(values) == 1 else values}
 
 
+_DURATION_AGO_FOR = re.compile(
+    r'(\d+)\s+(day|week|month)s\s+ago\s+for\s+(\d+)\s+(day|week|month)s', re.IGNORECASE)
+_BARE_DURATION = re.compile(r'\d+\s+(?:day|week|month)s?', re.IGNORECASE)
+
+
+def translate_date_filter_expression(expression: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Translate a Looker date filter expression into an Omni filter condition
+
+    Only `N days ago for N days` (also weeks and months, same N and unit on
+    both sides, N of 2 or more) is translated, to
+    `time_for_duration: [N complete days ago, N days]`. "complete" matters:
+    Looker's "7 days ago for 7 days" is the last 7 complete days, without
+    today.
+
+    Returns:
+        (condition, None) when translated, else (None, reason). Named periods
+        (`last month`, `today`, ...) and `N days` (which includes today so
+        far) have no confirmed Omni form and are never translated.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        return None, "it has no value"
+    expr = ' '.join(expression.split())
+    match = _DURATION_AGO_FOR.fullmatch(expr)
+    if match:
+        count, unit, for_count, for_unit = (g.lower() for g in match.groups())
+        if count == for_count and unit == for_unit and int(count) >= 2:
+            n = int(count)
+            return {'time_for_duration': [f"{n} complete {unit}s ago", f"{n} {unit}s"]}, None
+    elif _BARE_DURATION.fullmatch(expr):
+        return None, (f"Looker's `{expr}` includes today so far plus the prior complete periods; "
+                      f"there is no confirmed Omni form for it")
+    return None, "the expression is outside the forms translated automatically"
+
+
 def extract_measure_filters(looker_measure: Dict) -> List[Tuple[str, Any]]:
     """
     Normalize the lkml representations of measure filters to (field, expression)
 
     lkml parses `filters: [status: "Complete"]` as
     `filters__all: [[{"status": "Complete"}]]`; the older block form
-    `filters: {field: status value: "Complete"}` is also accepted.
+    `filters: {field: status value: "Complete"}` (parsed as
+    `filters__all: [{"field": "status", "value": "Complete"}]`) is also
+    accepted. The same shapes occur in an explore's `always_filter`.
     """
     pairs: List[Tuple[str, Any]] = []
 
@@ -386,6 +423,9 @@ def extract_measure_filters(looker_measure: Dict) -> List[Tuple[str, Any]]:
         items = group if isinstance(group, list) else [group]
         for item in items:
             if isinstance(item, dict):
+                if set(item) == {'field', 'value'}:
+                    pairs.append((item['field'], item['value']))
+                    continue
                 for key, value in item.items():
                     pairs.append((key, value))
 

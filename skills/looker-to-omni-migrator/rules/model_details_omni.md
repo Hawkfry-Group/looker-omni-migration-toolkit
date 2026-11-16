@@ -187,12 +187,23 @@ required_access_grants: [can_view_financials]
 ```
 
 - `joins` is a tree: a view nested under another is joined through it.
-- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`.
+- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`, `relationships`, `default_filters`, `extends`, `template`.
+- `relationships` (topic-scoped join definitions, same keys as section 9) applies to this topic only. `joins` is still required: it declares which views are in the topic and how they nest.
+- `default_filters` is keyed by `view.field`. An entry with `required: true` beside its operator can be changed by users but not removed, and must have a value:
+
+```yaml
+default_filters:
+  order_items.created:
+    time_for_duration: [7 complete days ago, 7 days]
+    required: true
+```
+
+- `extends: [other_topic]` inherits another topic; values set in the extending topic override the inherited ones, and its `joins:` replaces the inherited `joins:`. `template: true` marks a topic that can only be used through `extends`.
 - When curating a topic for business users, prefer an explicit field list over wildcards.
 
 ## 9. Relationships
 
-A `.relationships` file is a plain YAML list:
+Join definitions are a plain YAML list. The migrator writes them inside the topic file under `relationships:` by default, or to a `.relationships` file with `--relationships-file`:
 
 ```yaml
 - join_from_view: order_items
@@ -213,7 +224,7 @@ A `.relationships` file is a plain YAML list:
 - `join_type`: `always_left`, `inner`, `full_outer`, `cross`.
 - `relationship_type`: `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`.
 - `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once.
-- Relationships apply to the whole model, not one topic. Define each pair once.
+- Relationships in a relationships file apply to the whole model, not one topic: define each pair once. Relationships under a topic's `relationships:` key apply to that topic only.
 
 ## 10. Tags
 

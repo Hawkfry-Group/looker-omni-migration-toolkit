@@ -13,7 +13,7 @@ Exactly one is required.
 | Mode | Needs | Writes |
 |------|-------|--------|
 | `--view NAME` | `--phase`, `--owner` | `{view}.view.yaml` or `{view}.query.view` in `--omni-repo`; `{view}.migration.md` in reports |
-| `--explore NAME` | — | `{explore}.topic.yaml` and (if any join converts) `{explore}.relationships` in `--omni-repo`; `{explore}_explore.md` in reports |
+| `--explore NAME` | — | `{explore}.topic.yaml` in `--omni-repo` (with `--relationships-file`, also `{explore}.relationships` if any join converts); `{explore}_explore.md` in reports |
 | `--parse-access-grants` | — | `access_grants.md` in reports |
 
 ## Flags
@@ -51,6 +51,8 @@ Precedence: command-line flag, then `--config`, then the built-in default.
 | `--unverified` | Tag migrated objects `unverified` instead of `verified`. |
 | `--dry-run` | Prints `[dry-run] would write <path> (<n> bytes)` and `[dry-run] would remove <path>` lines. Creates, changes and deletes nothing, including directories. |
 | `--explore-analysis` | Only with `--view`. Also writes `{view}_explore_analysis.md` for explores that use the view. |
+| `--relationships-file` | Only with `--explore`. Writes the join definitions to a separate `{explore}.relationships` file (model-wide in Omni) and reports joins that conflict with other `.relationships` files in the output directory. Default: the join definitions go inside the topic file under `relationships:` (topic-scoped), and no separate file is written. |
+| `--template` | Only with `--explore`. Writes `template: true` on the topic, for an explore that is only a base for other explores. An explore with `extension: required` gets it without the flag. |
 
 ## Merging
 
@@ -67,7 +69,7 @@ So re-running a view for a later phase keeps the earlier phase's fields visible.
 |------|---------|
 | `0` | Success. Manual items may still be listed (`COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION`). |
 | `1` | Input or runtime error: repo, CSV, view or explore not found; no CSV rows in scope; duplicate view/explore/grant names; unparseable `sql_table_name`; unsupported native derived table; Liquid or `${...}` in SQL derived-table SQL; unreadable existing view; existing `catalog` the LookML does not name; rename conflict (a `from_looker__<field>` tag whose target name is now also a LookML field, or the same tag on two fields); more than one `--omni-source-repo` match; invalid merged view; missing or malformed `--config`; missing `--omni-source-repo` path. These are detected before any file of the failing view or explore is written. Exceptions: an I/O error while writing (each file is replaced atomically, but files already written by the run stay), and a failing `--explore-analysis`, which runs after the view files are written. |
-| `2` | Invalid arguments: no mode or two modes, `--view` without `--phase`/`--owner`, `--explore-analysis` without `--view`, unknown flags. |
+| `2` | Invalid arguments: no mode or two modes, `--view` without `--phase`/`--owner`, `--explore-analysis` without `--view`, `--relationships-file` or `--template` without `--explore`, unknown flags. |
 
 ## Examples
 
@@ -146,9 +148,8 @@ python scripts/migrate.py --explore order_items --looker-repo examples/simple/th
       ✓ Joins: 1
 [2/4] Building Omni topic...
       ✓ Topic: order_items (1 join(s), 0 skipped)
-[3/4] Generating topic and relationships files...
+[3/4] Writing topic file...
       ✓ Topic: .../migration/staging/topics/order_items.topic.yaml
-      ✓ Relationships: .../migration/staging/topics/order_items.relationships
 [4/4] Generating explore migration report...
       ✓ Report: .../migration/staging/reports/order_items_explore.md
 

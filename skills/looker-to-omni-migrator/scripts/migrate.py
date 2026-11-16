@@ -10,8 +10,15 @@ Run from the skill directory. Exactly one mode is required:
     # Preview: print the files that would be written, write nothing
     python scripts/migrate.py --view users --phase 0 --owner "Team A" --dry-run
 
-    # Migrate an explore to an Omni topic + relationships file
+    # Migrate an explore to an Omni topic (joins and their relationships
+    # are written inside the topic file)
     python scripts/migrate.py --explore order_items
+
+    # Same, with the relationships in a separate file (model-wide in Omni)
+    python scripts/migrate.py --explore order_items --relationships-file
+
+    # Mark the topic as a template (a base that other topics extend)
+    python scripts/migrate.py --explore orders_base --template
 
     # List the access grants defined in the Looker project
     python scripts/migrate.py --parse-access-grants
@@ -25,8 +32,9 @@ Defaults:
 Outputs:
     view mode     {view}.view.yaml, or {view}.query.view for derived tables,
                   in --omni-repo; {view}.migration.md in the reports dir
-    explore mode  {explore}.topic.yaml and {explore}.relationships in
-                  --omni-repo; {explore}_explore.md in the reports dir
+    explore mode  {explore}.topic.yaml in --omni-repo (with --relationships-file
+                  also {explore}.relationships); {explore}_explore.md in the
+                  reports dir
     grants mode   access_grants.md in the reports dir
 
 Exit codes:
@@ -120,6 +128,12 @@ Examples:
                         help='Print the files that would be written; write nothing')
     parser.add_argument('--explore-analysis', action='store_true',
                         help='With --view: also write {view}_explore_analysis.md for explores using the view')
+    parser.add_argument('--relationships-file', action='store_true',
+                        help='With --explore: write the joins to a separate {explore}.relationships file '
+                             '(model-wide in Omni) instead of the topic file\'s own relationships: key')
+    parser.add_argument('--template', action='store_true',
+                        help='With --explore: write template: true on the topic (an explore that is only a base '
+                             'for other explores). Set automatically for an explore with extension: required')
     return parser
 
 
@@ -206,6 +220,9 @@ def main(argv=None) -> int:
         parser.error("--view requires both --phase and --owner")
     if args.explore_analysis and not args.view:
         parser.error("--explore-analysis can only be used with --view")
+    for flag in ('relationships_file', 'template'):
+        if getattr(args, flag) and not args.explore:
+            parser.error(f"--{flag.replace('_', '-')} can only be used with --explore")
 
     looker_repo = Path(args.looker_repo)
     if not looker_repo.exists():
@@ -306,7 +323,11 @@ def main(argv=None) -> int:
             else:
                 print(f"⚠️  No explores found using {args.view}")
     else:
-        result = orchestrator.migrate_explore(explore_name=args.explore)
+        result = orchestrator.migrate_explore(
+            explore_name=args.explore,
+            relationships_file=args.relationships_file,
+            template=args.template
+        )
         if not result.success:
             print(f"\n❌ Explore migration failed: {result.error_message}")
             return 1

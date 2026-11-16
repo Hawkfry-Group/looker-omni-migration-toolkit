@@ -270,12 +270,55 @@ The report's **Merge/Enrich Summary** lists counts for: Updated (in scope), Merg
 ## Explores
 
 - Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]`, `base_view` (from `from:`/`view_name:` if set), and `joins` nested by which view each join's `sql_on` references.
-- `{explore}.relationships` is a plain YAML list, written only when at least one join converts.
+- The join definitions are written inside the topic file under a top-level `relationships:` key (topic-scoped relationships), so they apply to that topic only. `joins:` is still written and keeps its nesting. With `--relationships-file` they go to `{explore}.relationships` instead (a plain YAML list, written only when at least one join converts), and a join between the same two views that differs from another `.relationships` file in the output directory is reported as a conflict. Both forms write the same keys.
 - Join types: `left_outer` (or none) → `always_left`; `inner` → `inner`; `full_outer` → `full_outer`; `cross` → `cross`. Missing `relationship` defaults to `many_to_one`. Other join types or relationships: join not migrated.
 - Aliased joins (`from:`) use `join_to_view` plus `join_to_view_as`; joins from an aliased view use `join_from_view_as`.
 - Not migrated, reported with the original SQL: joins with Liquid, `foreign_key`, raw `sql`, references outside the explore, more than one parent, cycles, or that depend on a skipped join.
 - Carried into the topic: `access_filter` → `access_filters`, `sql_always_where` → `always_where_sql`, `sql_always_having` → `always_having_sql`, `required_access_grants`, `hidden`, `group_label`.
-- Reported only: `always_filter`, `conditionally_filter`, `fields:` restrictions, `extends`, `always_join`, `required_joins`, join-level `required_access_grants`.
+- Reported only: `conditionally_filter` (Omni has no equivalent), `fields:` restrictions, `always_join`, `required_joins`, join-level `required_access_grants`.
+
+### `always_filter`
+
+A Looker `always_filter` is a filter users can change but not remove. It becomes a required default filter on the topic: `required: true` sits beside the operator, and a required entry must have a value.
+
+```yaml
+default_filters:
+  order_items.created:
+    time_for_duration: [7 complete days ago, 7 days]
+    required: true
+  order_items.status:
+    is: [Complete, Shipped]
+    required: true
+```
+
+Only these expressions are translated:
+
+| Looker expression | Omni |
+|---|---|
+| `N days ago for N days` (also weeks, months; same N and unit on both sides, N of 2 or more) on a date field | `time_for_duration: [N complete days ago, N days]` |
+| a plain value on a string field, e.g. `global` | `is: global` |
+| a comma list of values on a string field, `a,b` | `is: [a, b]` |
+| one number on a number field | `is: 5` |
+
+- `complete` matters: Looker's "7 days ago for 7 days" is the last 7 complete days, without today.
+- The filter key is the Omni field. A timeframe field of a dimension group (`created_date`, `created_time`, `created_raw`) maps to the group's Omni name (`created`); a dimension of type `date`, `date_time` or `time` keeps its name. A field on an aliased join keeps the alias (`buyer.country`); a field on an aliased base view uses the view name.
+- Not written, reported as MANUAL ACTION REQUIRED with the Looker expression and the reason: an empty value, `N days` (it includes today so far), named periods (`last month`, `this month`, `today`, `yesterday`), negations, wildcards, comparisons, `NULL`, yesno fields, measures, other timeframes (`created_week`), a field that is not view-qualified or not found in the view, and a field on a view that is not in the topic.
+- Translated filters are also listed under MANUAL ACTION REQUIRED as "carried", to be verified in Omni.
+
+### Explore `extends`
+
+- The parent chain is resolved across every `.lkml` file under `--looker-repo`. The topic gets `extends: [parent]` and also the full merged result: the parents' joins plus its own, the merged relationships, and the merged settings. The child carries the complete join list because a child topic's `joins:` replaces the parent's in Omni, while Looker adds them. `base_view` is always written.
+- Merge semantics follow Looker: the child's parameters override the parent's; joins are additive; with several parents a later one wins; chains are followed. A join declared again by the child is merged parameter by parameter (the child wins); when the child leaves parameters out, the merged join is reported for review.
+- Inherited when the child does not set them: `label`, `description`, `view_name`/`from`, `access_filter`, `sql_always_where`, `sql_always_having`, `required_access_grants`, `always_filter`, `group_label`, `hidden`, and the reported-only settings. `extension` is not inherited.
+- The report has an "Inheritance (extends)" section listing the explores merged, the inherited joins and settings and their origin, and the overrides.
+- Reported as MANUAL ACTION REQUIRED: the parent topics must exist in Omni (migrate the parent explores too); several parents in `extends:` (Omni documents one); refinements on a parent (not applied); a child that defines `access_filter` when a parent also does.
+- If a parent is missing, declared more than once, or the chain is circular, nothing is merged, `extends:` is not written, and the explore is reported as before.
+
+### Template topics
+
+- An explore with `extension: required` becomes a topic with `template: true`. A template topic cannot be queried on its own; other topics extend it.
+- An explore that other explores extend but that has no `extension: required` stays a normal topic, because it is usable on its own in Looker. Pass `--template` to force `template: true` for an explore you know is only a base.
+- The report's Summary states the topic type and the reason. An `extension: required` explore that no explore under `--looker-repo` extends is still written as a template and reported.
 - Splitting an explore into several topics is manual; `--explore-analysis` suggests splits.
 
 ---

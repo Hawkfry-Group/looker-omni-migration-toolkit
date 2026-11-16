@@ -1,4 +1,6 @@
-# Reference output: join definitions for the order_items topic.
+# Reference output of the optional --relationships-file mode: the join
+# definitions for the order_items topic as a separate file. By default they
+# are written inside order_items.topic.yaml instead.
 # Relationships migrated from Looker explore: order_items
 # Base view: order_items. Joins: 1.
 - join_from_view: order_items

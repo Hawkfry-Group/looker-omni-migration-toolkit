@@ -298,11 +298,18 @@ class OmniTopic(BaseModel):
     Supports both test topics (single view, no joins) and real topics (from explores, with joins)
     """
     base_view: str = Field(..., description="Base view name (e.g., order_items)")
+    extends: Optional[List[str]] = Field(None, description="Topics this topic inherits from (Looker explore extends)")
+    template: Optional[bool] = Field(None, description="Abstract topic that can only be used through extends")
     label: str = Field(..., description="Topic label")
     group_label: Optional[str] = Field(None, description="Optional group label for organizing topics")
     description: str = Field(..., description="Concise topic description")
     fields: List[str] = Field(..., description="List of fields (supports wildcards like all_views.*)")
+    relationships: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Topic-scoped relationships (join conditions for the views under joins)")
     joins: Dict = Field(default_factory=dict, description="Join definitions (empty for single-view topics)")
+    default_filters: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None, description="Default filters, keyed by view.field. `required: true` beside the operator "
+                          "makes the filter changeable but not removable (Looker always_filter)")
     ai_context: str = Field(..., description="Detailed context for AI")
 
     # Row/topic-level security carried over from the Looker explore
@@ -320,6 +327,18 @@ class OmniTopic(BaseModel):
         """Ensure fields list is not empty"""
         if not v:
             raise ValueError("Topic must have at least one field")
+        return v
+
+    @field_validator('default_filters')
+    @classmethod
+    def validate_required_filters_have_value(cls, v):
+        """A required default filter must carry an operator with a value"""
+        for field_name, condition in (v or {}).items():
+            if not condition.get('required'):
+                continue
+            values = [value for key, value in condition.items() if key != 'required']
+            if not values or any(value is None or value == [] or value == '' for value in values):
+                raise ValueError(f"Required default filter on {field_name} must have a value")
         return v
 
 

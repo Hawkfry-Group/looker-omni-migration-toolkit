@@ -11,8 +11,8 @@ Looker views and explores.
 | `{view}.view.yaml` | views dir (`--omni-repo`) | view migration, table-based view |
 | `{view}.query.view` | views dir | view migration, derived table (`sql:` or `query:`) |
 | `{view}.migration.md` | reports dir | view migration |
-| `{explore}.topic.yaml` | topics dir | explore migration |
-| `{explore}.relationships` | topics dir | explore migration (YAML list of joins) |
+| `{explore}.topic.yaml` | topics dir | explore migration (joins and their relationships) |
+| `{explore}.relationships` | topics dir | explore migration with `--relationships-file` (YAML list of joins) |
 | `{explore}_explore.md` | reports dir | explore migration |
 
 The reports dir defaults to the sibling `reports/` folder of the output dir
@@ -798,8 +798,23 @@ class FileGenerator:
         for key in ('ai_context', 'always_where_sql', 'always_having_sql'):
             if isinstance(topic_dict.get(key), str) and '\n' in topic_dict[key]:
                 topic_dict[key] = LiteralScalarString(topic_dict[key])
-        topic_dict = self._format_tags_inline(topic_dict, keys=('tags', 'required_access_grants', 'fields'))
+        if topic_dict.get('relationships'):
+            topic_dict['relationships'] = self._literal_multiline(topic_dict['relationships'])
+        # `is` and `time_for_duration` only occur under default_filters in a topic
+        topic_dict = self._format_tags_inline(
+            topic_dict,
+            keys=('tags', 'required_access_grants', 'fields', 'extends', 'is', 'time_for_duration')
+        )
         return self._dump_yaml(topic_dict)
+
+    @staticmethod
+    def _literal_multiline(relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Copies of the relationships with multi-line strings as block scalars"""
+        return [
+            {key: LiteralScalarString(value) if isinstance(value, str) and '\n' in value else value
+             for key, value in rel.items()}
+            for rel in relationships
+        ]
 
     def generate_topic_yaml(self, topic: OmniTopic, output_filename: str) -> Path:
         """Generate an Omni topic file in the output directory"""
@@ -824,13 +839,7 @@ class FileGenerator:
         A relationships file: a YAML list of joins, preceded by an optional
         comment header (kept out of the data so the file stays valid)
         """
-        rels = []
-        for rel in relationships:
-            rel = dict(rel)
-            for key, value in rel.items():
-                if isinstance(value, str) and '\n' in value:
-                    rel[key] = LiteralScalarString(value)
-            rels.append(rel)
+        rels = self._literal_multiline(relationships)
 
         header = ''.join(f"# {line}\n" if line else "#\n" for line in (header_lines or []))
         return header + self._dump_yaml(rels)
