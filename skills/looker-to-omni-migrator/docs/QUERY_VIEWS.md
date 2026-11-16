@@ -163,7 +163,7 @@ dimensions:
     format: usdcurrency_2
 ```
 
-- `base_view` is the explore's real base view; `topic` is the explore name. The topic must exist in Omni (migrate the explore too).
+- `base_view` is the name the explore's own fields go by, which is the topic's `base_view` (for `explore: sales { from: order_items }` it is the alias `sales`, which the topic declares); `topic` is the explore name. The topic must exist in Omni (migrate the explore too). A topic written with `--topic-prefix` has a different name: update `topic` by hand.
 - `sorts: [field: desc]` become `sorts: [{field, desc: true}]`; `limit` is kept.
 - Filters are translated with the same rules as measure filters (see [../rules/migration_rules.md](../rules/migration_rules.md)).
 - Only columns declared as dimensions or measures in the LookML view appear under `dimensions:`/`measures:`. If the LookML view selects columns it never declares, add them by hand.

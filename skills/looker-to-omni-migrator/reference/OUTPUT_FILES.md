@@ -192,8 +192,10 @@ With `--relationships-file` the topic has no `relationships:` key and the same l
   reversible: false
 ```
 
-- Topic keys the migrator can write: `base_view`, `extends`, `template`, `label`, `group_label`, `description`, `fields`, `relationships`, `joins`, `default_filters`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `hidden`, `required_access_grants`.
+- Topic keys the migrator can write: `base_view`, `extends`, `template`, `label`, `group_label`, `description`, `fields`, `views`, `relationships`, `joins`, `default_filters`, `ai_context`, `access_filters`, `always_where_sql`, `always_having_sql`, `hidden`, `required_access_grants`.
 - `joins` is nested by dependency: a join whose `sql_on` references another joined view sits under it. It is written in both modes.
+- `views` is written when the explore has a base alias (`<alias>: { extends: [real_view] }`), a `view_label` that differs from the view's label, or fields that reference a join alias of the topic (written like the fields of a view file, under the view's name in the topic).
+- With `--topic-prefix VALUE` the files are `{VALUE}__{explore}.topic.yaml` and `{VALUE}__{explore}_explore.md`.
 - `default_filters` holds the explore's `always_filter` entries that could be translated, each with `required: true`.
 - `extends` is written when the explore's parent chain was resolved; the topic then also carries the merged joins, relationships and settings. `template: true` is written for an explore with `extension: required`, or with `--template`.
 - Joins that were not migrated are listed in the report and, with `--relationships-file`, in a comment at the top of the relationships file (`# Not migrated (see users_explore.md): orders`).
@@ -201,7 +203,7 @@ With `--relationships-file` the topic has no `relationships:` key and the same l
 
 ### Explore report (`{explore}_explore.md`)
 
-Sections: Summary (explore, source file, base view, topic type with the reason for `template: true` or a normal topic, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Inheritance (only when `extends` was merged: explores merged, inherited joins and settings with their origin, overrides), Join Definitions (each join with type, relationship, SQL, whether it was migrated and which explore it was inherited from), Generated Files, Notes.
+Sections: Summary (explore, source file, base view, topic type with the reason for `template: true` or a normal topic, joins migrated), MANUAL ACTION REQUIRED, Carried Into the Topic, Inheritance (only when `extends` was merged: explores merged, inherited joins and settings with their origin, overrides), Alias map (alias, real view, where declared), Topic-scoped fields (only when a view of the topic has fields that reference a join alias: written, left out, or not written with the reason), Join Definitions (each join with type, relationship, SQL, whether it was migrated and which explore it was inherited from), Generated Files, Notes.
 
 ## 4. Explore analysis report (`{view}_explore_analysis.md`)
 

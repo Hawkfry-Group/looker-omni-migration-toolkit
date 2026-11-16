@@ -109,6 +109,7 @@ class JoinDefinition:
     sql: Optional[str] = None  # Raw `sql:` join (instead of sql_on)
     required_access_grants: List[str] = field(default_factory=list)
     required_joins: List[str] = field(default_factory=list)
+    view_label: Optional[str] = None  # label of the joined view in this explore
 
     @property
     def source_view(self) -> str:
@@ -125,7 +126,7 @@ class ExploreInfo:
     """Information about a Looker explore"""
     name: str
     file_path: str
-    base_view: str
+    base_view: str  # the real view the explore is based on (`from:`, else `view_name:`, else the name)
     joins: List[JoinDefinition]
     label: Optional[str]
     description: Optional[str]
@@ -144,9 +145,35 @@ class ExploreInfo:
     view_name: Optional[str] = None  # raw `view_name:`
     from_view: Optional[str] = None  # raw `from:`
     extension_required: bool = False  # `extension: required`
+    view_label: Optional[str] = None  # label of the base view in this explore
     # Filled by resolve_explore_extends: item -> explore that supplied it.
     # Items are attribute names (e.g. "always_filter") and "join:<name>".
     sources: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def base_alias(self) -> str:
+        """
+        The name the explore's own fields are referenced by: `view_name:`
+        when set, else the explore name. It differs from `base_view` when
+        `from:` names another view.
+        """
+        return self.view_name or self.name
+
+    @property
+    def base_is_aliased(self) -> bool:
+        return self.base_alias != self.base_view
+
+    def view_names(self) -> Dict[str, str]:
+        """{name a view goes by in this explore: the real view}, base first, then each join"""
+        names = {self.base_alias: self.base_view}
+        for join in self.joins:
+            names.setdefault(join.view, join.source_view)
+        return names
+
+
+def base_view_of(name: str, view_name: Optional[str], from_view: Optional[str]) -> str:
+    """The real view of an explore: `from:` wins over `view_name:`, which wins over the explore name"""
+    return from_view or view_name or name
 
 
 @dataclass
@@ -241,7 +268,8 @@ def parse_explore_file(file_path: str) -> List[ExploreInfo]:
                 foreign_key=join_dict.get('foreign_key'),
                 sql=join_dict.get('sql'),
                 required_access_grants=[str(g) for g in _as_list(join_dict.get('required_access_grants'))],
-                required_joins=[str(j) for j in _as_list(join_dict.get('required_joins'))]
+                required_joins=[str(j) for j in _as_list(join_dict.get('required_joins'))],
+                view_label=join_dict.get('view_label')
             )
             joins.append(join)
 
@@ -255,7 +283,7 @@ def parse_explore_file(file_path: str) -> List[ExploreInfo]:
         explore = ExploreInfo(
             name=explore_name,
             file_path=file_path,
-            base_view=explore_dict.get('view_name') or explore_dict.get('from') or explore_name,
+            base_view=base_view_of(explore_name, explore_dict.get('view_name'), explore_dict.get('from')),
             joins=joins,
             label=explore_dict.get('label'),
             description=explore_dict.get('description'),
@@ -276,7 +304,8 @@ def parse_explore_file(file_path: str) -> List[ExploreInfo]:
             hidden_explicit='hidden' in explore_dict,
             view_name=explore_dict.get('view_name'),
             from_view=explore_dict.get('from'),
-            extension_required=str(explore_dict.get('extension', '')).lower() == 'required'
+            extension_required=str(explore_dict.get('extension', '')).lower() == 'required',
+            view_label=explore_dict.get('view_label')
         )
 
         explores.append(explore)
@@ -309,6 +338,78 @@ def load_explores(looker_repo: str) -> Tuple[Dict[str, List[ExploreInfo]], Dict[
     return definitions, refinements
 
 
+_INCLUDE_RE = re.compile(r'^\s*include\s*:\s*"([^"]+)"', re.MULTILINE)
+MODEL_SUFFIX = '.model.lkml'
+
+
+def _include_regex(pattern: str) -> 're.Pattern':
+    """A LookML include pattern as a regex over repo-relative paths (`*` stays in a folder, `**` crosses folders)"""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith('**/', i):
+            out.append('(?:.*/)?')
+            i += 3
+        elif pattern.startswith('**', i):
+            out.append('.*')
+            i += 2
+        elif pattern[i] == '*':
+            out.append('[^/]*')
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile(''.join(out) + r'(?:\.lkml)?')
+
+
+def find_models_including(looker_repo: str, explore_file: str) -> List[str]:
+    """
+    Names of the Looker models that hold an explore file: the
+    `*.model.lkml` file that is the file itself, or whose `include:`
+    patterns reach it (directly or through an included file)
+
+    A pattern starting with `/` is read from the repository root, any other
+    from the folder of the including file. Includes of other projects
+    (`//project/...`) are ignored.
+    """
+    root = Path(looker_repo).resolve()
+    target = Path(explore_file).resolve()
+    files = {path.resolve().relative_to(root).as_posix(): path.resolve() for path in root.rglob('*.lkml')}
+
+    def included(path: Path) -> Set[str]:
+        try:
+            text = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            return set()
+        found: Set[str] = set()
+        folder = path.parent.relative_to(root).as_posix()
+        for pattern in _INCLUDE_RE.findall(text):
+            if pattern.startswith('//'):
+                continue
+            if pattern.startswith('/'):
+                pattern = pattern[1:]
+            elif folder != '.':
+                pattern = f"{folder}/{pattern}"
+            regex = _include_regex(pattern)
+            found.update(name for name in files if regex.fullmatch(name))
+        return found
+
+    models = []
+    for name in sorted(files):
+        if not name.endswith(MODEL_SUFFIX):
+            continue
+        seen = {name}
+        queue = [name]
+        while queue:
+            current = queue.pop()
+            for other in included(files[current]) - seen:
+                seen.add(other)
+                queue.append(other)
+        if any(files[item] == target for item in seen):
+            models.append(Path(name).name[:-len(MODEL_SUFFIX)])
+    return models
+
+
 def find_extending_explores(explore_name: str, definitions: Dict[str, List[ExploreInfo]]) -> List[str]:
     """Names of the explores that list `explore_name` in their `extends:`"""
     return sorted({
@@ -328,9 +429,10 @@ def find_extending_explores(explore_name: str, definitions: Dict[str, List[Explo
 _INHERITED_ATTRIBUTES = (
     'label', 'description', 'group_label', 'access_grants', 'access_filters', 'sql_always_where',
     'sql_always_having', 'always_filter', 'conditionally_filter', 'fields', 'always_join',
-    'view_name', 'from_view',
+    'view_name', 'from_view', 'view_label',
 )
-_JOIN_ATTRIBUTES = ('type', 'relationship', 'fields', 'from_view', 'required_access_grants', 'required_joins')
+_JOIN_ATTRIBUTES = ('type', 'relationship', 'fields', 'from_view', 'required_access_grants', 'required_joins',
+                    'view_label')
 # Alternative ways to write the join condition: taken together from one side
 _JOIN_CONDITION_ATTRIBUTES = ('sql_on', 'foreign_key', 'sql')
 
@@ -416,7 +518,7 @@ def _merge_explores(base: ExploreInfo, over: ExploreInfo, resolution: ExtendsRes
     return ExploreInfo(
         name=over.name,
         file_path=over.file_path,
-        base_view=values['view_name'] or values['from_view'] or over.name,
+        base_view=base_view_of(over.name, values['view_name'], values['from_view']),
         joins=list(joins.values()),
         hidden=hidden_from.hidden,
         hidden_explicit=hidden_from.hidden_explicit,

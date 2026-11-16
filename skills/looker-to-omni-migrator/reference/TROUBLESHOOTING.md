@@ -72,7 +72,7 @@ Explores are found in any `*.lkml` file, including model files.
 
 ### Duplicate definitions
 
-A view, explore or access grant name defined in more than one file stops the run, listing the files. This often means two models define the same view; `include:` statements are not used to choose between them. Rename or remove one copy, or point `--looker-repo` at a narrower folder.
+A view, explore or access grant name defined in more than one file stops the run, listing every file that defines it (one per line for a view), so you can decide which to rename. This often means two models define the same view; `include:` statements are not used to choose between them. Rename or remove one copy, or point `--looker-repo` at a narrower folder.
 
 ### Table name cannot be parsed
 
@@ -120,6 +120,10 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `x: \`type: column\` quotes the value as an identifier ...` | Check each allowed value of the parameter is a full column or `schema.table` name |
 | `...: the \`type: unquoted\` parameter is used both as an identifier and as a quoted string ...` | An Omni filter-only field has one type. Split the parameter in two, or rewrite the SQL by hand |
 | `Join x (NOT migrated): sql_on uses Liquid...` | Write the relationship by hand |
+| `Unresolved field references` | A `${alias.field}` in a join condition or a row restriction names a field the aliased view does not have. Fix the reference in the topic |
+| `Alias references not verified` | The view behind an alias is not under `--looker-repo`, or is defined twice. Check the references by hand |
+| `Cross-view fields needing attention` | A field that references a join alias could not be converted or checked, or carries access grants. Write it in the topic's `views:` block by hand, or define the grants |
+| `Join alias x has the name of another view` | Check that the alias means the joined view inside the topic |
 | `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
 | `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |
 | `Explore inheritance (extends)` ... `were not merged` | A parent explore is missing, declared twice or circular. Point `--looker-repo` at the whole project, or merge by hand |
@@ -138,7 +142,15 @@ It could not be converted, or it depends on a field that could not be. Look unde
 
 ### A field references `${created_date}` and is missing
 
-Looker timeframe fields do not exist in Omni. The field is reported, not rewritten. Rewrite the reference to the base dimension (for example `${created}`) by hand.
+References to the `date` and `raw` timeframes are rewritten (`${created[date]}`). A reference to another timeframe (`${created_month}`) is reported, not rewritten, because Looker renders it as a string or an integer and Omni as a date. Rewrite the SQL by hand with the Omni timeframe that keeps the comparison correct.
+
+### A field that references another view is missing from the view file
+
+A field whose SQL names a join alias (`${shop.store_name}`) is listed under "Topic-scoped fields" in the view report. It is written by `--explore`, in the `views:` block of each topic that declares the alias.
+
+### Two explores have the same name
+
+Topic names must be unique in an Omni model. Migrate each with `--topic-prefix` (a name, or `model` for the Looker model file that holds the explore).
 
 ### Earlier output was changed
 

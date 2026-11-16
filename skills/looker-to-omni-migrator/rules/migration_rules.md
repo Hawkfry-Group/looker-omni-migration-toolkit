@@ -150,7 +150,7 @@ dimensions:
 
 - A `${field}` reference, or a measure filter, that names an inherited field follows the same rules as a reference to a field of the view itself. The inherited field is not copied into the child and is not an `auto_dependency`.
 - The reference is only valid when the parent view can migrate that field. Each inherited field is judged in the view that defines it; if it is not convertible there, the dependent field is not written and is reported with the parent's reason.
-- The rule for Looker timeframe fields is unchanged: `${created_date}` is not written, whether the dimension group is the view's own or inherited.
+- The rule for Looker timeframe fields is the same for an inherited dimension group: `${created_date}` becomes `${created[date]}` (see Dates).
 - In explore mode, an `always_filter` on an inherited field (or on a timeframe of an inherited dimension group) translates like one on a field of the view itself.
 - The "No primary key dimension in the final view" warning is not raised when a view of the chain defines a `primary_key: yes` dimension that converts.
 
@@ -218,7 +218,9 @@ Omni has no `dimension_groups:` section. A `type: time` dimension_group becomes 
 - `sql:` is the underlying column.
 - No `timeframes:` and no `datatype:` are written; Omni generates timeframes for date and timestamp columns. The Looker timeframes are noted in the report.
 - Not converted (MANUAL): `type: duration`, `datatype` other than `timestamp`/`datetime`/`date` (for example `epoch`, `yyyymmdd`), `convert_tz: no`, `sql_date`, `sql_start`/`sql_end`.
-- References to Looker timeframe fields, such as `${created_date}`, point at a field that does not exist in Omni. Fields using them are not written and are reported.
+- References to timeframe fields. A reference to the `date` or `raw` timeframe of a dimension group is rewritten to Omni's timeframe form: `${created_date}` becomes `${created[date]}` and `${view.created_raw}` becomes `${view.created[raw]}`, for the view's own and inherited groups, in field `sql:` and in join `sql_on`. These two timeframes have the same SQL type in both tools. Every rewrite is listed in the report under "Timeframe references rewritten".
+- A reference to any other timeframe (`week`, `month`, `quarter`, `year`, `time`, `day_of_week`, `week_of_year` and so on) is not rewritten: Looker renders these as formatted strings or integers and Omni renders dates, so a comparison in the surrounding SQL could silently change meaning. The field (or join) is not written and the report names the timeframe.
+- A name counts as a timeframe reference only when a `type: time` dimension group of that name exists in the view's chain and offers that timeframe (a group with no `timeframes:` list has Looker's defaults). A real dimension called `signup_date` is left alone.
 
 ```lkml
 dimension_group: created {
@@ -355,10 +357,10 @@ The report's **Merge/Enrich Summary** lists counts for: Updated (in scope), Merg
 
 ## Explores
 
-- Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]`, `base_view` (from `from:`/`view_name:` if set), and `joins` nested by which view each join's `sql_on` references.
+- Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]`, `base_view` (the name the explore's own fields go by, see Aliases below), and `joins` nested by which view each join's `sql_on` references.
 - The join definitions are written inside the topic file under a top-level `relationships:` key (topic-scoped relationships), so they apply to that topic only. `joins:` is still written and keeps its nesting. With `--relationships-file` they go to `{explore}.relationships` instead (a plain YAML list, written only when at least one join converts), and a join between the same two views that differs from another `.relationships` file in the output directory is reported as a conflict. Both forms write the same keys.
 - Join types: `left_outer` (or none) → `always_left`; `inner` → `inner`; `full_outer` → `full_outer`; `cross` → `cross`. Missing `relationship` defaults to `many_to_one`. Other join types or relationships: join not migrated.
-- Aliased joins (`from:`) use `join_to_view` plus `join_to_view_as`; joins from an aliased view use `join_from_view_as`.
+- Aliased joins (`from:`) use `join_to_view` plus `join_to_view_as`; joins from an aliased view use `join_from_view_as`. `on_sql` keeps the Looker aliases.
 - Not migrated, reported with the original SQL: joins with Liquid, `foreign_key`, raw `sql`, references outside the explore, more than one parent, cycles, or that depend on a skipped join.
 - Carried into the topic: `access_filter` → `access_filters`, `sql_always_where` → `always_where_sql`, `sql_always_having` → `always_having_sql`, `required_access_grants`, `hidden`, `group_label`.
 - Reported only: `conditionally_filter` (Omni has no equivalent), `fields:` restrictions, `always_join`, `required_joins`, join-level `required_access_grants`.
@@ -387,9 +389,63 @@ Only these expressions are translated:
 | one number on a number field | `is: 5` |
 
 - `complete` matters: Looker's "7 days ago for 7 days" is the last 7 complete days, without today.
-- The filter key is the Omni field. A timeframe field of a dimension group (`created_date`, `created_time`, `created_raw`) maps to the group's Omni name (`created`); a dimension of type `date`, `date_time` or `time` keeps its name. A field on an aliased join keeps the alias (`buyer.country`); a field on an aliased base view uses the view name.
+- The filter key is the Omni field. A timeframe field of a dimension group (`created_date`, `created_time`, `created_raw`) maps to the group's Omni name (`created`); a dimension of type `date`, `date_time` or `time` keeps its name. A field on an aliased join keeps the alias (`buyer.country`), and so does a field on an aliased base view (`sales.sold`).
 - Not written, reported as MANUAL ACTION REQUIRED with the Looker expression and the reason: an empty value, `N days` (it includes today so far), named periods (`last month`, `this month`, `today`, `yesterday`), negations, wildcards, comparisons, `NULL`, yesno fields, measures, other timeframes (`created_week`), a field that is not view-qualified or not found in the view, and a field on a view that is not in the topic.
 - Translated filters are also listed under MANUAL ACTION REQUIRED as "carried", to be verified in Omni.
+
+### Aliases (kept, scoped to the topic)
+
+Looker projects reuse short names (`orders`, `session`) for different views in different explores. The migrator keeps every alias and declares it inside the topic, so it never becomes a model-wide name: two topics can use the same alias for different views.
+
+- **Join alias.** `join: shop { from: stores }` becomes `join_to_view: stores` with `join_to_view_as: shop` in the topic's `relationships:`.
+- **Base alias.** The explore's own fields go by `view_name:` when set, else by the explore name. The real view is `from:` when set, else `view_name:`, else the explore name. When the two differ (`explore: sales { from: sales_fact }`, or `from:` together with `view_name:`), the topic gets `base_view: <alias>` and declares the alias in its `views:` block:
+
+```yaml
+base_view: sales
+views:
+  sales:
+    extends: [sales_fact]
+relationships:
+- join_from_view: sales
+  join_to_view: stores
+  join_to_view_as: shop
+  on_sql: ${sales.store_key} = ${shop.store_key}
+joins:
+  shop: {}
+```
+
+- **Filters and restrictions keep the alias.** `always_filter`, `access_filter`, `sql_always_where` and `sql_always_having` name fields through the alias (`sales.sold_date`), and the field type is read from the real view. The `default_filters` key keeps the alias (`sales.sold`).
+- **Verification replaces the blanket warning.** Every `${alias.field}` in the join conditions, `access_filters`, `always_where_sql` and `always_having_sql` is checked against the view the alias stands for (own fields, inherited fields, dimension group timeframes). Only the references that do not resolve are reported ("Unresolved field references"). An alias whose view is not a single view under `--looker-repo` is reported as not verified.
+- **View labels.** A Looker `view_label` on the explore or a join becomes `label:` for that name in the topic's `views:` block when it differs from the view's own label.
+- **Alias map.** The explore report has an "Alias map" table: alias, real view, where it is declared.
+- **One alias map.** The same map (every base alias and join alias of every explore under `--looker-repo`) resolves aliases in Liquid, in filters and in cross-view fields. Outside the explore that declares it, a name that stands for more than one view is ambiguous and stays a manual item.
+- Stops the run: a base alias that is also the name of another view under `--looker-repo` (declaring it would change that view inside the topic). Reported: a join alias with the name of another view; a base alias used with `--relationships-file` (the alias exists in the topic only).
+- A join whose `sql_on` names the base by anything other than the base alias is not migrated ("not part of the explore").
+
+### Cross-view fields (topic-scoped fields)
+
+A field whose SQL or filter names another view through a join alias (a name that is not a view under `--looker-repo`) fails Omni model validation in a view file ("No such view"), and validates when it is defined in the topic's `views:` block. So:
+
+- **View mode** does not write such a field in the view file. It is listed in the view report under "Topic-scoped fields" with the aliases it needs. It is not a manual item. A field built on a topic-scoped field (a measure on a cross-view dimension) is topic-scoped too, including through `extends:`.
+- **Explore mode** converts these fields with the same rules as view mode (types, formats, filters, timeframes, Liquid), for the base view and every joined view, and writes each one under the view's name in the topic:
+
+```yaml
+views:
+  sales:
+    extends: [sales_fact]
+    dimensions:
+      store_label:
+        sql: ${shop.store_name}
+```
+
+- A field is written only when every view it names is in the topic and has the field it reads. When an alias it needs is not in the topic, or stands for a view without that field there, the field is left out and noted in the report (it does not work in the Looker explore either). A field that cannot be converted, or whose alias stands for a view that cannot be checked, is a MANUAL ACTION REQUIRED item.
+- Explore mode has no scope CSV, so these fields are written visible unless Looker hides them. They carry the `verified`/`unverified` tag, and the `mig_phase_N` tag only when `--phase` is passed with `--explore`. Field-level `required_access_grants` are copied and reported.
+- A reference to another view by its real name stays in the view file, as before. A name that is neither a view nor an alias under `--looker-repo` is also kept, and flagged in the Cross-View References note.
+- A topic-scoped field whose translated Liquid names a view that the topic does not have under that same name is not written (manual).
+
+### Topic file prefix
+
+Topic files are not namespaced by folder in Omni: two topics with the same name overwrite each other. `--topic-prefix VALUE` writes `{VALUE}__{explore}.topic.yaml` (and `{VALUE}__{explore}_explore.md`) and prefixes the topics named in `extends:` the same way. `--topic-prefix model` uses the name of the one `*.model.lkml` file that defines the explore or reaches its file through `include:` (patterns starting with `/` are read from `--looker-repo`, others from the including file's folder; includes of other projects are ignored). If no single model holds the explore, the run stops with a message. The topic `label` stays the Looker explore label. Default: no prefix.
 
 ### Explore `extends`
 

@@ -185,7 +185,8 @@ class TestRequiredDefaultFilters:
         _, topic, _ = migrate(tmp_path, repo)
         assert topic["default_filters"] == {"buyer.country": {"is": "Portugal", "required": True}}
 
-    def test_aliased_base_view_uses_the_view_name(self, tmp_path):
+    def test_aliased_base_view_keeps_the_alias(self, tmp_path):
+        # F1/J3a: the key keeps the base alias, which the topic declares in `views:`
         repo = make_repo(tmp_path, """
             explore: customers {
               from: users
@@ -194,9 +195,11 @@ class TestRequiredDefaultFilters:
         """)
         _, topic, _ = migrate(tmp_path, repo, "customers")
         assert topic["default_filters"] == {
-            "users.country": {"is": "Portugal", "required": True},
-            "users.created": {"time_for_duration": ["7 complete days ago", "7 days"], "required": True},
+            "customers.country": {"is": "Portugal", "required": True},
+            "customers.created": {"time_for_duration": ["7 complete days ago", "7 days"], "required": True},
         }
+        assert topic["base_view"] == "customers"
+        assert topic["views"] == {"customers": {"extends": ["users"]}}
 
     def test_legacy_block_syntax(self, tmp_path):
         repo = make_repo(tmp_path, """

@@ -419,6 +419,24 @@ def _view_names_in_file(lkml_file: Path) -> List[str]:
     return [v.get('name', '') for v in parsed.get('views', [])]
 
 
+def duplicate_view_message(view_name: str, files: List[str]) -> str:
+    """
+    The error for a view name with several definitions: every file that
+    defines it, one per line, so the user can decide which to rename
+    """
+    listed = []
+    for file_path in sorted(set(files)):
+        count = files.count(file_path)
+        listed.append(f"  - {file_path}" + (f" ({count} definitions in this file)" if count > 1 else ""))
+    where = "more than one file" if len(set(files)) > 1 else "one file more than once"
+    return (
+        f"View '{view_name}' is defined in {where} ({len(files)} definitions):\n"
+        + '\n'.join(listed)
+        + "\nView names must be unique under --looker-repo. Rename all but one of them (and the references to "
+          "them), or point --looker-repo at a single project."
+    )
+
+
 def find_view_definitions(looker_repo: str, view_name: str) -> Tuple[List[str], List[str]]:
     """
     Every file that defines `view: view_name`, and every file that refines it
@@ -446,10 +464,7 @@ def find_looker_view_file(looker_repo: str, view_name: str) -> Optional[str]:
     """
     definitions, _ = find_view_definitions(looker_repo, view_name)
     if len(definitions) > 1:
-        raise ValueError(
-            f"View '{view_name}' is defined in more than one file: {', '.join(definitions)}. "
-            f"Point --looker-repo at a single project."
-        )
+        raise ValueError(duplicate_view_message(view_name, definitions))
     return definitions[0] if definitions else None
 
 
@@ -578,12 +593,8 @@ def view_from_index(
     the view is not defined, ValueError when more than one file defines it.
     """
     found = definitions.get(view_name, [])
-    files = sorted({view.file_path for view in found})
-    if len(files) > 1:
-        raise ValueError(
-            f"View '{view_name}' is defined in more than one file: {', '.join(files)}. "
-            f"Point --looker-repo at a single project."
-        )
+    if len(found) > 1:
+        raise ValueError(duplicate_view_message(view_name, [view.file_path for view in found]))
     if not found:
         raise FileNotFoundError(
             f"Looker view '{view_name}' not found in {looker_repo} "

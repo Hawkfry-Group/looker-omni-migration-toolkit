@@ -343,6 +343,10 @@ class OmniTopic(BaseModel):
     group_label: Optional[str] = Field(None, description="Optional group label for organizing topics")
     description: str = Field(..., description="Concise topic description")
     fields: List[str] = Field(..., description="List of fields (supports wildcards like all_views.*)")
+    views: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None, description="Topic-scoped view definitions, keyed by the view's name in the topic: a base alias "
+                          "(`extends: [real_view]`), a label, and the dimensions and measures that reference "
+                          "join aliases of this topic (serialised like the fields of a view file)")
     relationships: Optional[List[Dict[str, Any]]] = Field(
         None, description="Topic-scoped relationships (join conditions for the views under joins)")
     joins: Dict = Field(default_factory=dict, description="Join definitions (empty for single-view topics)")
@@ -366,6 +370,18 @@ class OmniTopic(BaseModel):
         """Ensure fields list is not empty"""
         if not v:
             raise ValueError("Topic must have at least one field")
+        return v
+
+    @field_validator('views')
+    @classmethod
+    def validate_views(cls, v):
+        """Only the keys the migrator writes in a topic's `views:` block, and no empty block"""
+        for name, block in (v or {}).items():
+            unknown = set(block) - {'label', 'extends', 'dimensions', 'measures'}
+            if unknown:
+                raise ValueError(f"Unsupported keys in views.{name}: {', '.join(sorted(unknown))}")
+            if not any(block.get(key) for key in ('label', 'extends', 'dimensions', 'measures')):
+                raise ValueError(f"views.{name} is empty")
         return v
 
     @field_validator('default_filters')
@@ -402,6 +418,11 @@ class MigrationReport(BaseModel):
     merge_info: Optional[Dict[str, Any]] = None  # Merge/enrich stats when existing Omni view was found
     # Liquid translated to Omni Mustache: [{'where': SQL block, 'items': ["`looker` → `omni`"]}]
     liquid_translated: Optional[List[Dict[str, Any]]] = None
+    # Timeframe references rewritten: [{'where': field, 'items': ["`${created_date}` → `${created[date]}`"]}]
+    timeframes_rewritten: Optional[List[Dict[str, Any]]] = None
+    # Fields left out of the view file because they need a join alias:
+    # [{'field', 'kind', 'aliases', 'inherited_from' (optional)}]
+    topic_scoped_fields: Optional[List[Dict[str, str]]] = None
 
     def to_markdown(self) -> str:
         """Convert to markdown report"""
@@ -475,6 +496,25 @@ class MigrationReport(BaseModel):
                 md += f"- **{block['where']}**\n"
                 for item in block['items']:
                     md += f"  - {item}\n"
+            md += "\n"
+
+        if self.timeframes_rewritten:
+            md += "## Timeframe references rewritten\n"
+            md += ("References to the `date` and `raw` timeframes of a dimension group, rewritten to Omni's "
+                   "`${dimension[timeframe]}`.\n\n")
+            for block in self.timeframes_rewritten:
+                md += f"- **{block['where']}**: {', '.join(block['items'])}\n"
+            md += "\n"
+
+        if self.topic_scoped_fields:
+            md += "## Topic-scoped fields\n"
+            md += ("These fields reference another view through a join alias. Omni model validation rejects such a "
+                   "field in a view file, so they are not written here. Explore mode (`--explore`) writes each one "
+                   "into the `views:` block of every topic that declares the aliases it needs. Nothing to do in "
+                   "this view.\n\n")
+            for item in self.topic_scoped_fields:
+                origin = f", inherited from `{item['inherited_from']}`" if item.get('inherited_from') else ""
+                md += f"- **{item['field']}** ({item['kind']}{origin}): needs {item['aliases']}\n"
             md += "\n"
 
         # NEW: Advanced Features section

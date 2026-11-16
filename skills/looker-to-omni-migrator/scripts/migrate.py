@@ -98,7 +98,8 @@ Examples:
                       help='List the access grants defined in the Looker project and write access_grants.md')
 
     parser.add_argument('--phase', type=parse_phase,
-                        help='Migration phase to select from the CSV (0 or P0). Required for --view')
+                        help='Migration phase to select from the CSV (0 or P0). Required for --view. With '
+                             '--explore (optional): phase tag for the fields written in the topic views: block')
     parser.add_argument('--owner', type=str,
                         help='CSV owner value to select (exact match). Required for --view')
 
@@ -134,6 +135,11 @@ Examples:
     parser.add_argument('--template', action='store_true',
                         help='With --explore: write template: true on the topic (an explore that is only a base '
                              'for other explores). Set automatically for an explore with extension: required')
+    parser.add_argument('--topic-prefix', type=str, default=None, metavar='VALUE',
+                        help='With --explore: write the topic as {VALUE}__{explore}.topic.yaml and prefix the '
+                             'topics named in extends: the same way (topic names must be unique in an Omni '
+                             'model). The value "model" uses the name of the Looker model file that holds the '
+                             'explore')
     return parser
 
 
@@ -220,7 +226,7 @@ def main(argv=None) -> int:
         parser.error("--view requires both --phase and --owner")
     if args.explore_analysis and not args.view:
         parser.error("--explore-analysis can only be used with --view")
-    for flag in ('relationships_file', 'template'):
+    for flag in ('relationships_file', 'template', 'topic_prefix'):
         if getattr(args, flag) and not args.explore:
             parser.error(f"--{flag.replace('_', '-')} can only be used with --explore")
 
@@ -326,7 +332,10 @@ def main(argv=None) -> int:
         result = orchestrator.migrate_explore(
             explore_name=args.explore,
             relationships_file=args.relationships_file,
-            template=args.template
+            template=args.template,
+            topic_prefix=args.topic_prefix,
+            phase=args.phase,
+            verified=verified
         )
         if not result.success:
             print(f"\n❌ Explore migration failed: {result.error_message}")

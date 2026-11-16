@@ -170,7 +170,7 @@ dimensions:
     description: "When the order was placed."
 ```
 
-The migrator writes neither `timeframes:` nor `datatype:`. If you need to change the available timeframes by hand, check the Omni docs for the current syntax first. Looker timeframe fields such as `${created_date}` have no Omni equivalent field.
+The migrator writes neither `timeframes:` nor `datatype:`. If you need to change the available timeframes by hand, check the Omni docs for the current syntax first. A timeframe of a date dimension is referenced as `${created[date]}` (or `${orders.created[date]}` from another view). The migrator rewrites Looker's `${created_date}` and `${created_raw}` to this form; other Looker timeframe fields are not rewritten.
 
 ## 6. Measures
 
@@ -249,7 +249,27 @@ required_access_grants: [can_view_financials]
 ```
 
 - `joins` is a tree: a view nested under another is joined through it.
-- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`, `relationships`, `default_filters`, `extends`, `template`.
+- Other topic keys the migrator can write: `always_having_sql`, `hidden`, `group_label`, `ai_context`, `views`, `relationships`, `default_filters`, `extends`, `template`.
+- `views` holds topic-scoped view definitions, keyed by the view's name in the topic. The migrator uses it for three things: declaring a base view alias (`extends: [real_view]`), a `label` for a view in this topic, and dimensions and measures whose SQL references a join alias of this topic. Such a field fails model validation in a view file and validates here:
+
+```yaml
+base_view: sales
+views:
+  sales:
+    extends: [sales_fact]
+    dimensions:
+      store_label:
+        sql: ${shop.store_name}
+relationships:
+- join_from_view: sales
+  join_to_view: stores
+  join_to_view_as: shop
+  on_sql: ${sales.store_key} = ${shop.store_key}
+joins:
+  shop: {}
+```
+
+- Topic names must be unique in a model: topic files are not namespaced by folder.
 - `relationships` (topic-scoped join definitions, same keys as section 9) applies to this topic only. `joins` is still required: it declares which views are in the topic and how they nest.
 - `default_filters` is keyed by `view.field`. An entry with `required: true` beside its operator can be changed by users but not removed, and must have a value:
 
@@ -285,7 +305,7 @@ Join definitions are a plain YAML list. The migrator writes them inside the topi
 
 - `join_type`: `always_left`, `inner`, `full_outer`, `cross`.
 - `relationship_type`: `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`.
-- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once.
+- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once. An alias declared in a topic's own `relationships:` is scoped to that topic: two topics can use the same alias for different views.
 - Relationships in a relationships file apply to the whole model, not one topic: define each pair once. Relationships under a topic's `relationships:` key apply to that topic only.
 
 ## 10. Tags

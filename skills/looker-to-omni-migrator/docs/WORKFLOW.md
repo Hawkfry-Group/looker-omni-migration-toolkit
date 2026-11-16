@@ -112,7 +112,10 @@ What happens to explore features:
 | `type: inner`, `full_outer`, `cross` | `inner`, `full_outer`, `cross` |
 | other join types or relationships | join not migrated; reported |
 | `sql_on` | `on_sql`, with `${view.field}` references kept; joins nested by which view they reference |
-| `from:` alias | `join_to_view` plus `join_to_view_as` |
+| join `from:` alias | `join_to_view` plus `join_to_view_as`, scoped to the topic |
+| explore `from:` / `view_name:` that rename the base view | `base_view: <alias>`, declared in the topic's `views:` block with `extends: [real_view]` |
+| `view_label` | `label` in the topic's `views:` block |
+| fields of the topic's views that reference a join alias | written in the topic's `views:` block (view mode leaves them out of the view file) |
 | Liquid, `foreign_key`, raw `sql` joins, or joins that depend on a skipped join | not migrated; reported with the original SQL |
 | `access_filter` | topic `access_filters` (create the user attributes in Omni) |
 | `sql_always_where`, `sql_always_having` | `always_where_sql`, `always_having_sql` (verify) |
@@ -124,6 +127,22 @@ What happens to explore features:
 | `conditionally_filter`, `fields:`, `always_join`, `required_joins`, join-level grants | reported only |
 
 The join definitions are topic-scoped: they live in the topic file and apply to that topic only, so two explores can join the same views differently. To keep one model-wide relationships file instead, add `--relationships-file`: the joins are then written to `{explore}.relationships` (only when at least one join converts; a stale file from an earlier run is removed when a run produces no joins) and the CLI warns when another `.relationships` file in the output directory joins the same two views differently.
+
+### Aliases and cross-view fields
+
+Aliases are kept as in Looker and declared inside the topic, so the same alias can mean different views in different topics. The explore report lists them in an "Alias map" table and reports only the alias references that do not resolve.
+
+A field such as `sql: ${shop.store_name}`, where `shop` is a join alias, cannot live in a view file. View mode lists it under "Topic-scoped fields" in the view report, and explore mode writes it in the `views:` block of each topic that has the alias. These fields have no scope CSV row in explore mode: they are written visible unless Looker hides them. Pass `--phase N` with `--explore` to tag them with the migration phase.
+
+### Topic names across models
+
+Topic names must be unique in an Omni model, and topic files are not namespaced by folder. When two Looker models have an explore of the same name, add a prefix:
+
+```bash
+python skills/looker-to-omni-migrator/scripts/migrate.py --explore orders --looker-repo ./looker --topic-prefix model
+```
+
+This writes `{model}__orders.topic.yaml`, using the Looker model file that holds the explore. Pass a name instead of `model` to choose the prefix yourself.
 
 ### Explores that extend other explores
 

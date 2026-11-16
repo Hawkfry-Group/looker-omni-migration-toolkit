@@ -227,6 +227,8 @@ DROPPED_FIELD_PARAMS = ('drill_fields', 'link', 'links', 'html', 'map_layer_name
 MANUAL = "MANUAL ACTION REQUIRED"
 
 _IDENT = r'[a-zA-Z_][a-zA-Z0-9_]*'
+# Omni's timeframe selector on a date dimension: ${created[date]}
+_TIMEFRAME_SUFFIX = r'(?:\[[a-z0-9_]+\])?'
 _COMPARISON_KEYS = {
     '>=': 'greater_than_or_equal_to',
     '<=': 'less_than_or_equal_to',
@@ -247,6 +249,55 @@ class ConversionResult:
     cross_view_refs: Set[str] = field(default_factory=set)  # "view.field" references
     dropped_params: List[str] = field(default_factory=list)  # e.g. drill_fields, html
     liquid: Optional[LiquidTranslation] = None  # Liquid translated to Mustache in the field's sql
+    # Timeframe references rewritten in the field's sql: ["`${created_date}` → `${created[date]}`"]
+    timeframes: List[str] = field(default_factory=list)
+
+
+# Timeframes a Looker `type: time` dimension group offers. A group with no
+# `timeframes:` list has all of them.
+LOOKER_TIMEFRAMES = frozenset({
+    'raw', 'time', 'time_of_day', 'hour', 'hour_of_day', 'minute', 'second', 'millisecond', 'microsecond',
+    'date', 'week', 'day_of_week', 'day_of_week_index', 'month', 'month_num', 'month_name', 'day_of_month',
+    'fiscal_month_num', 'quarter', 'fiscal_quarter', 'quarter_of_year', 'fiscal_quarter_of_year', 'year',
+    'fiscal_year', 'day_of_year', 'week_of_year', 'yesno',
+})
+_SIZED_TIMEFRAME_RE = re.compile(r'(?:hour|minute|millisecond)\d+')
+# Timeframes with the same SQL type in Looker and Omni: a reference to one is
+# rewritten to Omni's `${dimension[timeframe]}`. Every other timeframe is a
+# formatted string or an integer in Looker and a date in Omni.
+REWRITTEN_TIMEFRAMES = ('date', 'raw')
+
+# {dimension group: its `timeframes:` list, or None when it has Looker's defaults}
+TimeGroups = Dict[str, Optional[List[str]]]
+
+
+def time_groups_of(dimension_groups: Dict[str, Dict]) -> TimeGroups:
+    """The `type: time` dimension groups of a parsed view, with their timeframes"""
+    return {
+        name: (list(data['timeframes']) if data.get('timeframes') else None)
+        for name, data in dimension_groups.items()
+        if data.get('type', 'time') == 'time'
+    }
+
+
+def match_timeframe(name: str, groups: TimeGroups) -> List[Tuple[str, str]]:
+    """
+    Every (dimension group, timeframe) the Looker field name `name` can
+    stand for: `created_date` is the `date` timeframe of group `created`
+    when that group exists and offers the timeframe
+    """
+    matches = []
+    for group, timeframes in groups.items():
+        if not name.startswith(f"{group}_"):
+            continue
+        timeframe = name[len(group) + 1:]
+        if timeframes is not None:
+            offered = timeframe in timeframes
+        else:
+            offered = timeframe in LOOKER_TIMEFRAMES or bool(_SIZED_TIMEFRAME_RE.fullmatch(timeframe))
+        if offered:
+            matches.append((group, timeframe))
+    return matches
 
 
 def _sentence(text: str) -> str:
@@ -492,7 +543,9 @@ class RuleApplier:
         column_fields: Optional[Dict[str, str]] = None,
         field_types: Optional[Dict[str, str]] = None,
         type_resolver: Optional[Callable[[str, str], Optional[str]]] = None,
-        liquid_context: Optional[LiquidContext] = None
+        liquid_context: Optional[LiquidContext] = None,
+        time_groups: Optional[TimeGroups] = None,
+        view_fields: Optional[Callable[[str], Optional[Tuple[Set[str], TimeGroups]]]] = None
     ):
         self.phase = phase
         self.verified = verified
@@ -508,6 +561,13 @@ class RuleApplier:
         # Resolves the fields named in Liquid tags. Without it only Liquid
         # that names no field (user attributes) can be translated.
         self.liquid_context = liquid_context or LiquidContext()
+        # `type: time` dimension groups of this view (own and inherited) with
+        # their timeframes: a `${created_date}` reference is only a timeframe
+        # reference when a group offers it
+        self.time_groups: TimeGroups = dict(time_groups or {})
+        # (field names, time groups) of another view named in `${view.field}`,
+        # None when the view is not known
+        self.view_fields = view_fields
         # Organization-specific term mappings; empty unless configured
         self.canonical_mappings = dict(
             canonical_mappings if canonical_mappings is not None else CANONICAL_MAPPINGS
@@ -658,18 +718,84 @@ class RuleApplier:
             return None
         return column if column != field_name else None
 
+    def rewrite_timeframe_references(
+        self,
+        sql: str,
+        changes: List[str],
+        warnings: List[str],
+        rewrites: List[str]
+    ) -> Optional[str]:
+        """
+        Rewrite references to dimension group timeframes for Omni
+
+        `${created_date}` becomes `${created[date]}` and `${created_raw}`
+        becomes `${created[raw]}`, with or without a view prefix, when a
+        `type: time` dimension group `created` offers that timeframe and no
+        field is really called `created_date`. Each rewrite is added to
+        `rewrites` and `changes`.
+
+        Returns:
+            The sql, or None when it references any other timeframe (or a
+            name two groups could supply): the reason is added to `warnings`
+            and the field must not be written.
+        """
+        problems: List[str] = []
+
+        def _rewrite(match):
+            view, name = match.group(1), match.group(2)
+            if view is None or view == self.view_name:
+                names, groups = set(self.field_types), self.time_groups
+            else:
+                known = self.view_fields(view) if self.view_fields else None
+                if known is None:
+                    return match.group(0)
+                names, groups = known
+            if name in names:
+                return match.group(0)  # a real field of that name, not a timeframe
+            found = match_timeframe(name, groups)
+            if not found:
+                return match.group(0)
+            ref = match.group(0)
+            if len(found) > 1:
+                problems.append(
+                    f"`{ref}` can be a timeframe of several dimension groups "
+                    f"({', '.join(group for group, _ in found)})"
+                )
+                return ref
+            group, timeframe = found[0]
+            if timeframe not in REWRITTEN_TIMEFRAMES:
+                problems.append(
+                    f"`{ref}` references the `{timeframe}` timeframe of dimension group `{group}`. Only the "
+                    f"{' and '.join(f'`{t}`' for t in REWRITTEN_TIMEFRAMES)} timeframes are rewritten: Looker "
+                    f"renders `{timeframe}` as a formatted string or an integer and Omni renders a date, so a "
+                    f"comparison in the surrounding SQL could silently change meaning"
+                )
+                return ref
+            new = '${' + (f"{view}." if view else '') + f"{group}[{timeframe}]" + '}'
+            item = f"`{ref}` → `{new}`"
+            if item not in rewrites:
+                rewrites.append(item)
+                changes.append(f"Timeframe reference rewritten: {item}")
+            return new
+
+        out = re.sub(r'\$\{(?:(' + _IDENT + r')\.)?(' + _IDENT + r')\}', _rewrite, sql)
+        if problems:
+            warnings.extend(f"{MANUAL}: {problem}" for problem in dict.fromkeys(problems))
+            return None
+        return out
+
     def extract_dependencies(self, sql: str) -> Set[str]:
-        """Same-view `${field}` references (excluding ${TABLE})"""
+        """Same-view `${field}` and `${field[timeframe]}` references (excluding ${TABLE})"""
         dependencies = set()
-        for match in re.finditer(r'\$\{(' + _IDENT + r')\}', sql or ''):
+        for match in re.finditer(r'\$\{(' + _IDENT + r')' + _TIMEFRAME_SUFFIX + r'\}', sql or ''):
             if match.group(1) != 'TABLE':
                 dependencies.add(match.group(1))
         return dependencies
 
     def extract_cross_view_references(self, sql: str) -> Set[str]:
-        """Cross-view `${view.field}` references, returned as 'view.field'"""
+        """Cross-view `${view.field}` and `${view.field[timeframe]}` references, returned as 'view.field'"""
         refs = set()
-        for match in re.finditer(r'\$\{(' + _IDENT + r')\.(' + _IDENT + r')\}', sql or ''):
+        for match in re.finditer(r'\$\{(' + _IDENT + r')\.(' + _IDENT + r')' + _TIMEFRAME_SUFFIX + r'\}', sql or ''):
             if match.group(1) != 'TABLE':
                 refs.add(f"{match.group(1)}.{match.group(2)}")
         return refs
@@ -879,6 +1005,9 @@ class RuleApplier:
 
         # Looker defaults sql to ${TABLE}.<field name>
         sql_raw, liquid = self._translate_liquid(looker_dim.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
         if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
@@ -954,7 +1083,8 @@ class RuleApplier:
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
             dropped_params=dropped,
-            liquid=liquid
+            liquid=liquid,
+            timeframes=rewritten_timeframes
         )
 
     def convert_measure(
@@ -998,6 +1128,9 @@ class RuleApplier:
             sql_raw = '${' + list_field + '}'
 
         sql_raw, liquid = self._translate_liquid(sql_raw, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
         if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
@@ -1106,7 +1239,8 @@ class RuleApplier:
             risk_level=risk_level,
             cross_view_refs=cross_view_refs,
             dropped_params=dropped,
-            liquid=liquid
+            liquid=liquid,
+            timeframes=rewritten_timeframes
         )
 
     def convert_dimension_group(
@@ -1161,6 +1295,9 @@ class RuleApplier:
 
         sql_raw, liquid = self._translate_liquid(
             looker_dim_group.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        rewritten_timeframes: List[str] = []
+        if sql_raw is not None:
+            sql_raw = self.rewrite_timeframe_references(sql_raw, changes, warnings, rewritten_timeframes)
         if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
@@ -1237,7 +1374,8 @@ class RuleApplier:
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
             dropped_params=dropped,
-            liquid=liquid
+            liquid=liquid,
+            timeframes=rewritten_timeframes
         )
 
     def convert_filter_field(

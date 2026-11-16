@@ -135,7 +135,7 @@ CONVERSION_OWNED_KEYS = (
     'percentile', 'custom_primary_key_sql', 'timeframes', 'datatype',
 )
 
-_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
+_REF_RE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?:\[[a-z0-9_]+\])?\}')
 
 
 # Tag recording that a field holds a Looker field merged under another name
@@ -221,10 +221,12 @@ def _rewrite_field_refs(obj: Any, renames: Dict[str, str], view_name: Optional[s
 
     if isinstance(obj, str):
         for old, new in renames.items():
-            obj = re.sub(r'\$\{' + re.escape(old) + r'\}', '${' + new + '}', obj)
+            # `${old}` and `${old[timeframe]}`
+            obj = re.sub(r'\$\{' + re.escape(old) + r'(\[[a-z0-9_]+\])?\}',
+                         lambda match: '${' + new + (match.group(1) or '') + '}', obj)
             if view_name:
-                obj = re.sub(r'\$\{' + re.escape(view_name) + r'\.' + re.escape(old) + r'\}',
-                             '${' + view_name + '.' + new + '}', obj)
+                obj = re.sub(r'\$\{' + re.escape(view_name) + r'\.' + re.escape(old) + r'(\[[a-z0-9_]+\])?\}',
+                             lambda match: '${' + view_name + '.' + new + (match.group(1) or '') + '}', obj)
                 # The same field named in a Mustache token: {{# view.old.filter }}, {{ filters.view.old.value }}
                 obj = re.sub(
                     r'(\{\{[#/^]?\s*(?:filters\.)?' + re.escape(view_name) + r'\.)' + re.escape(old)
@@ -745,6 +747,13 @@ class FileGenerator:
         view_dict = self._add_yaml_spacing(view_dict)
         view_dict = self._format_tags_inline(view_dict, keys=('tags', 'required_access_grants', 'extends'))
 
+        self._block_scalar_field_sql(view_dict)
+
+        return self._add_blank_lines_to_yaml(self._dump_yaml(view_dict)), info
+
+    @staticmethod
+    def _block_scalar_field_sql(view_dict: Dict):
+        """Write long, multi-line and templated field sql of a view (or a topic's view block) as block scalars"""
         for section in ('dimensions', 'measures'):
             for field_data in (view_dict.get(section) or {}).values():
                 if isinstance(field_data, dict) and isinstance(field_data.get('sql'), str):
@@ -752,8 +761,6 @@ class FileGenerator:
                     # A plain scalar must not start with `{{`: templated SQL is always a block scalar
                     if '\n' in field_sql or len(field_sql) > 80 or '{{' in field_sql:
                         field_data['sql'] = LiteralScalarString(field_sql)
-
-        return self._add_blank_lines_to_yaml(self._dump_yaml(view_dict)), info
 
     def generate_view_yaml(
         self,
@@ -849,6 +856,12 @@ class FileGenerator:
                 topic_dict[key] = LiteralScalarString(topic_dict[key])
         if topic_dict.get('relationships'):
             topic_dict['relationships'] = self._literal_multiline(topic_dict['relationships'])
+        # Fields in the topic's `views:` block are written like the fields of a view file
+        for view_name, block in (topic_dict.get('views') or {}).items():
+            for section in ('dimensions', 'measures'):
+                for field_name, field_data in (block.get(section) or {}).items():
+                    assert_no_looker_liquid(field_data.get('sql'), f"the sql of {view_name}.{field_name}")
+            self._block_scalar_field_sql(block)
         # `is` and `time_for_duration` only occur under default_filters in a topic
         topic_dict = self._format_tags_inline(
             topic_dict,
@@ -942,6 +955,12 @@ class ConversionReportBuilder:
         # Liquid translated to Mustache: (SQL block, translation)
         self.liquid_translations: List[Tuple[str, LiquidTranslation]] = []
 
+        # Timeframe references rewritten: (field, ["`looker` → `omni`"])
+        self.timeframe_rewrites: List[Tuple[str, List[str]]] = []
+
+        # Fields left out of the view file because they need a join alias
+        self.topic_scoped: List[Dict[str, str]] = []
+
         # Merge/enrich tracking
         self.merge_source: Optional[str] = None  # Path to existing Omni view used for merge
         self.merge_stats: Dict[str, int] = {}
@@ -981,6 +1000,17 @@ class ConversionReportBuilder:
     def add_liquid_translation(self, where: str, translation: LiquidTranslation):
         """Record the Liquid translated in one SQL block (`where` names the block)"""
         self.liquid_translations.append((where, translation))
+
+    def add_timeframe_rewrites(self, where: str, items: List[str]):
+        """Record the timeframe references rewritten in one field (`where` names the field)"""
+        self.timeframe_rewrites.append((where, list(items)))
+
+    def add_topic_scoped(self, field_name: str, kind: str, aliases: str, inherited_from: Optional[str] = None):
+        """Record a field that needs a join alias and is written by explore mode, not in the view file"""
+        item = {'field': field_name, 'kind': kind.replace('_', ' '), 'aliases': aliases}
+        if inherited_from:
+            item['inherited_from'] = inherited_from
+        self.topic_scoped.append(item)
 
     def liquid_attributes(self) -> List[str]:
         """User attributes the translated SQL reads, in first-use order"""
@@ -1164,7 +1194,11 @@ class ConversionReportBuilder:
             liquid_translated=[
                 {'where': where, 'items': list(translation.translated)}
                 for where, translation in self.liquid_translations
-            ] or None
+            ] or None,
+            timeframes_rewritten=[
+                {'where': where, 'items': items} for where, items in self.timeframe_rewrites
+            ] or None,
+            topic_scoped_fields=list(self.topic_scoped) or None
         )
 
         return report

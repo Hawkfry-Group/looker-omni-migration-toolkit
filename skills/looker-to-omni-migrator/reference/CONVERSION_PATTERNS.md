@@ -88,6 +88,29 @@ gross_margin:
 
 `${sale_price}` (same view) makes `sale_price` a dependency. `${inventory_items.cost}` is kept; `inventory_items` must be joined in the topic that uses this field. The grant is copied; define it in Omni.
 
+### Cross-view reference through a join alias
+
+```lkml
+# view: sales_fact
+dimension: store_label { sql: ${shop.store_name} ;; }
+
+# explore: sales { from: sales_fact  join: shop { from: stores ... } }
+```
+
+`shop` is a join alias, not a view. In a view file Omni rejects the field ("No such view"), so view mode leaves it out and lists it under "Topic-scoped fields". `--explore sales` writes it in the topic:
+
+```yaml
+base_view: sales
+views:
+  sales:
+    extends: [sales_fact]
+    dimensions:
+      store_label:
+        sql: ${shop.store_name}
+```
+
+A topic where `shop` is missing, or stands for a view without `store_name`, does not get the field; the report says why.
+
 ### Dropped parameters
 
 `html`, `link`, `drill_fields` and `map_layer_name` are removed and the field is kept. The report notes each under Changes Made → Other, for example `country (dimension): Not migrated: map_layer_name`.
@@ -201,7 +224,23 @@ Not converted: `type: duration`, `datatype: epoch`/`yyyymmdd`, `convert_tz: no`,
 fulfillment: MANUAL ACTION REQUIRED: dimension_group type 'duration' has no automatic Omni conversion
 ```
 
-A field that references a timeframe, such as `${created_date}`, is not written; Omni has no field by that name.
+A reference to the `date` or `raw` timeframe is rewritten to Omni's form. Any other timeframe is not written, because Looker renders it as a string or an integer and Omni as a date:
+
+```lkml
+dimension: created_day { sql: CAST(${created_date} AS VARCHAR) ;; }
+dimension: created_month_text { sql: ${created_month} ;; }
+```
+
+```yaml
+created_day:
+  sql: CAST(${created[date]} AS VARCHAR)
+```
+
+```
+created_month_text: MANUAL ACTION REQUIRED: `${created_month}` references the `month` timeframe of dimension group `created`. Only the `date` and `raw` timeframes are rewritten: ...
+```
+
+A real dimension named `signup_date` is not a timeframe reference and is left alone.
 
 ## View inheritance
 
@@ -406,7 +445,10 @@ With that config, a field labelled "SKU Code" is labelled "Product Code". A fiel
 | `type: left_outer` or no type | `join_type: always_left` |
 | `type: inner` / `full_outer` / `cross` | `inner` / `full_outer` / `cross` |
 | no `relationship` | `relationship_type: many_to_one` |
-| `join: visitor { from: users }` | `join_to_view: users`, `join_to_view_as: visitor` |
+| `join: visitor { from: users }` | `join_to_view: users`, `join_to_view_as: visitor` (scoped to the topic) |
+| `explore: sales { from: sales_fact }` | `base_view: sales` and `views: { sales: { extends: [sales_fact] } }` |
+| `view_label: "Shop"` on the explore or a join | `views: { <name>: { label: Shop } }` when it differs from the view's label |
+| `${orders.created_date}` in `sql_on` | `${orders.created[date]}` |
 | Liquid in `sql_on` | join not migrated; original SQL in the report |
 | `access_filter` | topic `access_filters` |
 | `sql_always_where` | topic `always_where_sql` |

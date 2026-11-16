@@ -459,11 +459,12 @@ class TestInheritedReferences:
         issue = next(i for i in result.issues if i.startswith("tier_label"))
         assert "price_tier" in issue and "base_entity" in issue and "MANUAL ACTION REQUIRED" in issue
 
-    def test_timeframe_rule_is_unchanged_for_an_inherited_group(self, migrated):
-        result, view, _ = migrated
-        assert "created_day" not in view["dimensions"]
-        issue = next(i for i in result.issues if i.startswith("created_day"))
-        assert "created_date" in issue and "must be rewritten for Omni" in issue
+    def test_date_timeframe_of_an_inherited_group_is_rewritten(self, migrated):
+        # T1: `${created_date}` names the `date` timeframe of the inherited group `created`
+        result, view, report = migrated
+        assert view["dimensions"]["created_day"]["sql"] == "${created[date]}"
+        assert not any(i.startswith("created_day") for i in result.issues)
+        assert "`${created_date}` → `${created[date]}`" in report.split("## Timeframe references rewritten")[1]
 
     def test_undefined_reference_still_blocks(self, migrated):
         result, view, _ = migrated

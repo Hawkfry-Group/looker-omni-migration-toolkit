@@ -52,6 +52,8 @@ Precedence: command-line flag, then `--config`, then the built-in default.
 | `--dry-run` | Prints `[dry-run] would write <path> (<n> bytes)` and `[dry-run] would remove <path>` lines. Creates, changes and deletes nothing, including directories. |
 | `--explore-analysis` | Only with `--view`. Also writes `{view}_explore_analysis.md` for explores that use the view. |
 | `--relationships-file` | Only with `--explore`. Writes the join definitions to a separate `{explore}.relationships` file (model-wide in Omni) and reports joins that conflict with other `.relationships` files in the output directory. Default: the join definitions go inside the topic file under `relationships:` (topic-scoped), and no separate file is written. |
+| `--topic-prefix VALUE` | Only with `--explore`. Writes `{VALUE}__{explore}.topic.yaml` (and the report under the same name) and prefixes the topics named in `extends:`. `model` uses the name of the one `*.model.lkml` file that defines the explore or includes its file; the run stops if there is none or more than one. Default: no prefix. |
+| `--phase N` with `--explore` | Optional. Tags the fields written in the topic's `views:` block with `mig_phase_N`. Without it they carry no phase tag. |
 | `--template` | Only with `--explore`. Writes `template: true` on the topic, for an explore that is only a base for other explores. An explore with `extension: required` gets it without the flag. |
 
 ## Merging
