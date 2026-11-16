@@ -69,6 +69,41 @@ dimensions:
 
 Raw SQL goes under `sql:`. A structured `query:` block is only for native Omni queries; see [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
 
+### 2.2.1 Filter-only fields and Mustache
+
+A filter-only field holds no column. It lives under the view's top-level `filters:` key and its value is read in SQL through Mustache. The migrator writes one for each Looker `filter:` and `parameter:`.
+
+```yaml
+sql: |-
+  SELECT user_id, SUM(sale_price) AS revenue
+  FROM thelook_ecommerce.order_items
+  WHERE {{# sales_by_period.order_date.filter }} created_at {{/ sales_by_period.order_date.filter }}
+    AND sale_price >= {{ filters.sales_by_period.min_sale_price.value }}
+  GROUP BY 1
+
+filters:
+  order_date:
+    type: timestamp
+  min_sale_price:
+    type: number
+    default_filter:
+      is: 0
+    filter_single_select_only: true
+```
+
+| Token | Renders |
+|-------|---------|
+| `{{# view.field.filter }} expr {{/ view.field.filter }}` | the filter applied to `expr` (TRUE when the filter is unset). No `filters.` prefix |
+| `{{ filters.view.field.value }}` | the value: a `string` as a quoted literal, a `number` bare, a `column` as a quoted identifier. Never add quotes around it |
+| `{{ filters.view.field.range_start }}`, `.range_end` | the bounds of a `timestamp` filter |
+| `{{ view.field.in_query }}`, `.is_selected`, `.is_filtered`, `{{ view.in_query }}` | TRUE or FALSE |
+| `{{ omni_attributes.name }}` | a user attribute, interpolated raw |
+
+- Filter-only field types: `string`, `number`, `timestamp`, `boolean`, `column`. There is no `date` type.
+- Keys the migrator writes: `type`, `label`, `description`, `group_label`, `hidden`, `suggestion_list` (items with `value` and an optional `label`), `suggest_from_field`, `default_filter`, `filter_single_select_only`.
+- The view name in a token is the Omni view that has the field. A view that extends another names itself.
+- Mustache has no equivalent of Liquid `{% if %}`: it cannot remove SQL text.
+
 ### 2.3 Template views and `extends`
 
 ```yaml
@@ -268,6 +303,7 @@ Hidden out-of-scope fields carry only `in_omni_in_looker_not_csv`.
 - Spaces, never tabs; consistent indentation.
 - Keys are case-sensitive.
 - Multi-line strings use `|` or `|-`.
+- A string that starts with `{{` must be a block scalar or double-quoted. The migrator writes every SQL that holds Mustache as a block scalar.
 - Lists can be `[a, b]` or `- a`.
 
 If a file does not parse, Omni may ignore the whole view.

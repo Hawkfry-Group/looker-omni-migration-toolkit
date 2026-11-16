@@ -62,9 +62,58 @@ dimensions:
 
 Notes:
 
-- The SQL goes under `sql:` and is reformatted with `sqlparse`; Looker's `;;` is removed.
+- The SQL goes under `sql:` and is reformatted with `sqlparse`; Looker's `;;` is removed. SQL that holds Mustache is not reformatted.
 - The schema is read from the table names in the SQL where possible, otherwise `--default-schema`.
-- Liquid or `${...}` references (for example `${other_view.SQL_TABLE_NAME}`) in the SQL stop the conversion: MANUAL ACTION REQUIRED, exit 1, nothing is written for the view.
+- `${...}` references (for example `${other_view.SQL_TABLE_NAME}`) in the SQL stop the conversion: MANUAL ACTION REQUIRED, exit 1, nothing is written for the view.
+
+### Templated SQL (Liquid)
+
+A derived table whose Liquid has an exact Omni equivalent converts to templated SQL. Input (`tests/fixtures/thelook/views/sales_by_period.view.lkml`, abridged):
+
+```lkml
+view: sales_by_period {
+  derived_table: {
+    sql:
+      SELECT order_items.user_id AS user_id, SUM(order_items.sale_price) AS revenue
+      FROM thelook_ecommerce.order_items AS order_items
+      WHERE {% condition order_date %} order_items.created_at {% endcondition %}
+        AND order_items.created_at < {% date_end order_date %}
+        AND order_items.sale_price >= {% parameter min_sale_price %}
+        AND order_items.region = '{{ _user_attributes['sales_region'] }}'
+      GROUP BY 1 ;;
+  }
+
+  filter: order_date { type: date }
+  parameter: min_sale_price { type: number default_value: "0" }
+}
+```
+
+Output (`sales_by_period.query.view`, abridged):
+
+```yaml
+sql: |-
+  SELECT order_items.user_id AS user_id, SUM(order_items.sale_price) AS revenue
+  FROM thelook_ecommerce.order_items AS order_items
+  WHERE {{# sales_by_period.order_date.filter }} order_items.created_at {{/ sales_by_period.order_date.filter }}
+    AND order_items.created_at < {{ filters.sales_by_period.order_date.range_end }}
+    AND order_items.sale_price >= {{ filters.sales_by_period.min_sale_price.value }}
+    AND order_items.region = '{{ omni_attributes.sales_region }}'
+  GROUP BY 1
+
+filters:
+  order_date:
+    type: timestamp
+
+  min_sale_price:
+    type: number
+    default_filter:
+      is: 0
+    filter_single_select_only: true
+```
+
+- The `filters:` block holds the view's parameters and filter-only fields. Ones the view inherits through `extends:` are written on the parent view, and the tokens still name this view.
+- The view converts only when every Liquid construct in the SQL has an exact equivalent (see [../rules/migration_rules.md](../rules/migration_rules.md), "Liquid in SQL"). One `{% if %}`, a tag embedded in a longer quoted string, or a reference that cannot be resolved stops the view, and the error names the construct.
+- The report lists each construct under "Liquid translated". Create the user attributes it names in Omni.
 
 ## Native derived tables
 

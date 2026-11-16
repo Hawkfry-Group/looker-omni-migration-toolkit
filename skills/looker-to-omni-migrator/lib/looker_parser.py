@@ -10,7 +10,7 @@ Reads Looker `.view.lkml` files and extracts:
 - Dimensions (regular fields)
 - Dimension Groups (date/time fields with multiple timeframes)
 - Measures (aggregations)
-- Parameters (user-configurable filters)
+- Parameters and filter-only fields (`parameter:`, `filter:`)
 - Derived Tables (SQL or native)
 - Advanced features (extends, access_filters, user_attributes)
 
@@ -101,7 +101,8 @@ if looker_view.access_filters:
 `load_views` parses every view of the repository once. `resolve_view_extends`
 resolves a view's `extends:` chain against that index (chains, shared
 grandparents, cycles) and `effective_view` returns the view as Looker sees it
-after inheritance.
+after inheritance. Parameters and filter-only fields are inherited like any
+other field.
 
 ## LookML Parsing
 
@@ -115,7 +116,7 @@ import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import lkml
 
 
@@ -134,6 +135,7 @@ class LookerView:
         self.dimension_groups = self._extract_dimension_groups()
         self.measures = self._extract_measures()
         self.parameters = self._extract_parameters()
+        self.filters = self._extract_filter_fields()
         self.label = self._extract_label()
         self.description = self._extract_description()
 
@@ -227,6 +229,18 @@ class LookerView:
                 parameters[param_name] = param
 
         return parameters
+
+    def _extract_filter_fields(self) -> Dict[str, Dict]:
+        """
+        Extract all filter-only fields (`filter: name { ... }`)
+
+        Returns dict of {filter_name: filter_dict}
+        """
+        filters = {}
+        for item in self.data.get('filters', []) or []:
+            if isinstance(item, dict) and item.get('name'):
+                filters[item['name']] = item
+        return filters
 
     def _extract_extends(self) -> List[str]:
         """
@@ -590,10 +604,19 @@ FIELD_KINDS = (
 )
 
 
+# Filter-only fields: Looker `parameter:` and `filter:`. They follow the same
+# inheritance rules as the fields above and are kept apart because they hold
+# no column and are written under the Omni view's `filters:` key.
+FILTER_FIELD_KINDS = (
+    ('parameter', 'parameters'),
+    ('filter', 'filters'),
+)
+
+
 @dataclass
 class InheritedField:
     """A field a view receives through `extends:`"""
-    kind: str  # dimension, dimension_group or measure
+    kind: str  # dimension, dimension_group, measure, parameter or filter
     data: Dict[str, Any]  # the definition Looker uses (parameters merged along the chain)
     origin: str  # view whose definition was applied last
     via: str  # direct parent it arrives through (the last one when several supply it)
@@ -645,6 +668,12 @@ def own_fields(view: LookerView) -> Dict[str, Tuple[str, Dict]]:
     return {name: (kind, data) for kind, fields in kinds.items() for name, data in fields.items()}
 
 
+def own_filter_fields(view: LookerView) -> Dict[str, Tuple[str, Dict]]:
+    """{field name: (kind, definition)} for the parameters and filter-only fields declared in the view itself"""
+    kinds = {'parameter': view.parameters, 'filter': view.filters}
+    return {name: (kind, data) for kind, fields in kinds.items() for name, data in fields.items()}
+
+
 def _build_chain(
     view: LookerView,
     definitions: Dict[str, List[LookerView]],
@@ -691,7 +720,7 @@ def _build_chain(
             inherited_source = parent.source
 
     fields = {field_name: replace(supplied, conflict=[]) for field_name, supplied in inherited.items()}
-    for field_name, (kind, data) in own_fields(view).items():
+    for field_name, (kind, data) in {**own_fields(view), **own_filter_fields(view)}.items():
         previous = inherited.get(field_name)
         if previous is not None and previous.kind != kind:
             raise _UnresolvedExtends(
@@ -767,7 +796,8 @@ def resolve_view_extends(
 def effective_view(
     view: LookerView,
     resolution: ViewExtendsResolution,
-    include_inherited: bool = False
+    include_inherited: bool = False,
+    also: Optional[Set[str]] = None
 ) -> LookerView:
     """
     The view as Looker sees it after `extends:`
@@ -776,11 +806,14 @@ def effective_view(
     override such as `dimension: id { hidden: yes }` keeps the parent's
     `sql`), and the fields two parents define differently are added with the
     definition Looker uses. With `include_inherited` every inherited field
-    is added, which gives the full field list of the view.
+    is added, which gives the full field list of the view. `also` names
+    inherited fields to add as well (fields the view has to write itself).
+    Parameters and filter-only fields follow the same rules.
     """
-    own = own_fields(view)
+    own = {**own_fields(view), **own_filter_fields(view)}
+    also = also or set()
     data = dict(view.data)
-    for kind, key in FIELD_KINDS:
+    for kind, key in FIELD_KINDS + FILTER_FIELD_KINDS:
         fields = []
         for name, (own_kind, own_data) in own.items():
             if own_kind != kind:
@@ -788,7 +821,8 @@ def effective_view(
             inherited = resolution.fields.get(name)
             fields.append({**inherited.data, **own_data} if inherited is not None else own_data)
         for name, inherited in resolution.fields.items():
-            if inherited.kind == kind and name not in own and (include_inherited or inherited.conflict):
+            if inherited.kind == kind and name not in own and (
+                    include_inherited or inherited.conflict or name in also):
                 fields.append(inherited.data)
         data[key] = fields
     merged = LookerView(view.file_path, data, file_comment=view.file_comment)

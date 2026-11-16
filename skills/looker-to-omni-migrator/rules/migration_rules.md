@@ -15,7 +15,7 @@ Examples use the thelook e-commerce model (`users`, `orders`, `order_items`, `pr
 5. **Never drop a restriction silently.** Access grants, access filters and explore filters are carried or reported.
 6. **Annotate opinions.** Hand-made improvements (renames, simplified SQL) get a `# OPINION:` comment in the YAML and a line in the report.
 7. **One primary key per view.** `primary_key: yes` is carried over. If the final view has no primary key, the report says so (HIGH risk); add the key to the CSV or set it by hand. The migrator does not pick one.
-8. **No parameters or Liquid.** Parameters, Liquid (`{{ }}`, `{% %}`) and fields that use them are not converted.
+8. **Liquid converts only when it is exact.** Parameters and filter-only fields become Omni filter-only fields. Liquid in SQL becomes Omni Mustache when every construct of the SQL block has an exact equivalent; otherwise the whole block is left out and the report names the construct that blocked it.
 9. **Resolve dependencies.** If an in-scope field references another field in the same view (`${field}`), that field is migrated too, recursively.
 10. **Validate before writing.** The whole view is rendered and validated first; if validation fails, nothing is written for that view.
 
@@ -31,8 +31,10 @@ Examples use the thelook e-commerce model (`users`, `orders`, `order_items`, `pr
 | Cannot be converted, references an undefined or unconvertible field, or is part of a reference cycle | Not written; reported (this applies to hidden fields too) |
 | CSV row with no matching LookML field | Reported as MANUAL ACTION REQUIRED |
 
+| CSV row with `type: filter` naming a `parameter:` or `filter:` | Written visible under the view's `filters:` key |
+| A `parameter:` or `filter:` not in the CSV | Written; visible when a Liquid tag in the repository's SQL names it, `hidden: true` otherwise |
+
 A Looker `hidden: yes` is kept, even on in-scope and auto-included fields.
-| CSV row with `type: parameter` | Not converted; reported |
 
 ### CSV columns
 
@@ -41,7 +43,7 @@ A Looker `hidden: yes` is kept, even on in-scope and auto-included fields.
 | `phase` | yes | `P0` or `0`; both match `--phase 0` |
 | `view` | yes | Looker view name |
 | `field` | yes | Looker field name |
-| `type` (or `field_type`) | yes | `dimension`, `dimension_group`, `measure`, `parameter` |
+| `type` (or `field_type`) | yes | `dimension`, `dimension_group`, `measure`, `filter` (a Looker `filter:` or `parameter:`; `parameter` is accepted too) |
 | `owner` | yes | Exact, case-sensitive match with `--owner` |
 | `omni_view`, `omni_field` | no | Tracking only. Not used for naming. |
 | `status`, `notes` | no | For your team |
@@ -105,7 +107,7 @@ table_name: users
 | `${field}` (same view) | unchanged; the field is a dependency |
 | `${other_view.field}` | unchanged; the view must be joined in the topic |
 | `${TABLE}."col"` (quoted), bare `${TABLE}`, `${...}` inside a string literal or comment | field not converted (MANUAL) |
-| Liquid | field not converted (MANUAL) |
+| Liquid | translated to Omni Mustache when every construct has an exact equivalent, else the field is not converted (MANUAL). See [Liquid](#liquid-parameters-and-filter-only-fields) |
 
 String literals, quoted identifiers and comments are never rewritten.
 
@@ -156,6 +158,56 @@ dimensions:
 
 - A CSV row that names an inherited field is not an error and writes nothing in the child. It is reported ("CSV Fields Inherited Through extends"): whether the field is visible follows the scope of the parent view that defines it, so list it in the CSV under that parent.
 - A view with no fields of its own (it only extends other views and sets a table) converts without any CSV row: the file holds the view header and `extends:`. A template view also converts without CSV rows; its fields are then written hidden, which the extending views inherit, and this is reported.
+
+---
+
+## Liquid, parameters and filter-only fields
+
+### Filter-only fields
+
+A Looker `filter:` and a Looker `parameter:` both become an entry under the Omni view's top-level `filters:` key.
+
+| Looker | Omni |
+|--------|------|
+| `type: string` (or no type) | `type: string` |
+| `type: number` | `type: number` |
+| `type: date`, `type: date_time` | `type: timestamp` |
+| `type: yesno` | `type: boolean` |
+| `type: unquoted` (parameter) | `type: column` when the SQL uses it as a whole identifier, `type: string` when it is used wrapped in single quotes or not used in SQL |
+| `label`, `description`, `group_label`, `hidden: yes` | same keys |
+| `allowed_value { label value }`, `suggestions: [...]` | `suggestion_list` items (`value`, optional `label`) |
+| `suggest_dimension: view.dim` | `suggest_from_field: view.dim` (an unqualified name gets the view) |
+| `default_value` | `default_filter: { is: value }`. A filter's default is a Looker filter expression: it is written only when it translates. A date default is reported, not written |
+| any `parameter:` | `filter_single_select_only: true` |
+| `filter:` with `sql:`, other types | not written; reported. SQL that names it is not converted either |
+
+- Every parameter and filter-only field of the view is written. It is visible when the CSV lists it (type `filter`) or a Liquid tag in the SQL of any view names it, and `hidden: true` otherwise.
+- Parameters and filter-only fields are inherited through `extends:` like any other field. One defined in a parent (a template included) is written on the parent and not copied into the child. Two parents that define it differently are resolved in the child, as for fields.
+- A template view cannot supply suggestions: a `suggest_dimension` that names the template itself is not carried and is reported.
+
+### Liquid in SQL
+
+Scope: `derived_table: { sql: ... }` and the `sql:` of dimensions, dimension groups and measures. The SQL is tokenized (Liquid tags, SQL strings, quoted identifiers, comments); nothing is replaced by pattern.
+
+| Looker | Omni |
+|--------|------|
+| `{% condition view.f %} expr {% endcondition %}` | `{{# view.f.filter }} expr {{/ view.f.filter }}` |
+| `{% parameter view.p %}`, `{{ view.p._parameter_value }}` | `{{ filters.view.p.value }}` |
+| `{% date_start view.f %}`, `{% date_end view.f %}` | `{{ filters.view.f.range_start }}`, `{{ filters.view.f.range_end }}` |
+| `{{ view.f._in_query }}`, `._is_selected`, `._is_filtered` (used as a value) | `{{ view.f.in_query }}`, `.is_selected`, `.is_filtered` |
+| `{{ view._in_query }}` | `{{ view.in_query }}` |
+| `{{ _user_attributes['x'] }}` | `{{ omni_attributes.x }}` |
+| `{% if %}`, `{% elsif %}`, `{% else %}`, `{% assign %}`, loops, Liquid filters (`\| upcase`), any other `{{ ... }}` | not converted (MANUAL); the report names the construct |
+
+- **All or nothing per SQL block.** If any construct is outside the table, malformed, nested (Liquid inside a `{% condition %}`), inside a SQL string or comment where it cannot be translated, or names a field that cannot be resolved, the block is not converted: the field is not written, or the derived view stops (exit 1, nothing written). The reason names every construct that blocked it.
+- **View name in the token.** An unqualified reference (`{% parameter p %}`) names the view being converted, also when the field is inherited. `view.field` is used when `view` is a view under `--looker-repo`. A join alias or explore alias is replaced by the view it stands for when it stands for exactly one view across all explores; otherwise the block is not converted.
+- **Targets.** `{% condition %}` and date bounds accept a filter-only field, a dimension, or the `date`, `time` or `raw` timeframe of a dimension group (named by the group in Omni). `{% parameter %}` and `_parameter_value` need a parameter. A dimension or measure named in a token is a dependency like `${field}`: if it is not migrated, the field that names it is not written (a derived view stops).
+- **Quotes.** Omni renders a `string` value as a quoted literal, a `number` bare and a `column` as a quoted identifier. Quotes that directly wrap a parameter tag (`'{% parameter p %}'`) are dropped. A tag embedded in a longer quoted string or identifier (`'%{% parameter p %}%'`, `"prefix_{% parameter p %}"`) is never converted. A quoted `number` or `yesno` parameter is not converted. User attributes are interpolated raw by both tools: quotes around them are kept.
+- **`type: unquoted`.** A use is an identifier when the tag is wrapped in double quotes or backticks, qualified with a dot (`${TABLE}.{% parameter p %}`, `{% parameter p %}.events`) or the table after `FROM` or `JOIN`. A use wrapped in single quotes is a string. A bare use anywhere else (for example `DATE_TRUNC({% parameter p %}, x)`) could be a keyword or a number and is not converted. A parameter used both as an identifier and as a string blocks every SQL block that reads it. With `type: column`, each allowed value must hold a full column or `schema.table` name.
+- **Inherited templated fields.** A Mustache token names one view. An inherited field whose Liquid names "this view" is therefore written into the extending view too, converted there, tagged `resolved_from_extends`. It is visible when the CSV lists it under the view or under the parent it comes from.
+- **Output.** SQL that holds Mustache is written as a block scalar and is not reformatted. Before a view is written, every SQL block converted in the run is checked again: a leftover `{%` or Looker-style `{{ ... }}` stops the write.
+- **Report.** Each construct translated is listed under "Liquid translated", per SQL block. User attributes read by translated SQL are listed as MANUAL ACTION REQUIRED (create them in Omni).
+- Liquid in `html`, `link`, `sql_table_name`, join `sql_on` and explore `sql_always_where` is not converted.
 
 ---
 
@@ -261,7 +313,8 @@ Any other name, and any custom `value_format` string, is not written. The field 
 
 | Looker | Handling |
 |--------|----------|
-| `parameter`, Liquid, fields using them | Not written; reported |
+| Liquid with no exact Omni equivalent (`{% if %}`, `{% assign %}`, loops, Liquid filters), and the SQL block that holds it | Not written; reported with the construct named |
+| `filter:` with `sql:`, parameter or filter types with no Omni type | Not written; reported |
 | `drill_fields`, `link`, `html`, `map_layer_name` | Dropped, field kept; noted under Changes Made |
 | `case`, `tiers`, `tier`/`location`/`distance` types | Field not written; reported |
 | Unsupported measure types, untranslatable filters | Measure not written; reported |
@@ -407,7 +460,8 @@ The migrator keeps Looker names (except when a merge folds a field into an exist
 6. **Redundancy Candidates**: hidden dimensions, listed as possible legacy fields
 7. **Not Converted**: hidden out-of-scope fields and fields that could not be written
 8. **Notes / Risks**: HIGH, MEDIUM and INFO entries
-9. **Advanced Features Detected**: access grants, access filters, refinements, `extends` (the chain, conflicts resolved, inherited CSV fields), template views, parameters, derived tables, persistence, each with a status such as `CARRIED - MANUAL ACTION REQUIRED` or `NOT MIGRATED`
+9. **Liquid translated**: only when Liquid was translated; each construct and its Mustache form, per SQL block
+10. **Advanced Features Detected**: parameters and filter-only fields (type and visibility of each), user attributes to create, access grants, access filters, refinements, `extends` (the chain, conflicts resolved, inherited CSV fields), template views, derived tables, persistence, each with a status such as `CARRIED - MANUAL ACTION REQUIRED` or `NOT MIGRATED`
 
 ## Never
 

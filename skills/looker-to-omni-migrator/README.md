@@ -95,6 +95,13 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | `${field}`, `${view.field}` | unchanged |
 | `derived_table: { sql: ... }` | `{view}.query.view` with `sql:` |
 | `derived_table: { explore_source: ... }` | `{view}.query.view` with `query:` |
+| `filter:`, `parameter:` | filter-only field under the view's `filters:` key (`allowed_value` becomes `suggestion_list`, `default_value` becomes `default_filter`) |
+| `{% condition f %} x {% endcondition %}` | `{{# view.f.filter }} x {{/ view.f.filter }}` |
+| `{% parameter p %}`, `{{ p._parameter_value }}` | `{{ filters.view.p.value }}` (quotes directly around the tag are dropped) |
+| `{% date_start f %}`, `{% date_end f %}` | `{{ filters.view.f.range_start }}`, `{{ filters.view.f.range_end }}` |
+| `{{ view.f._in_query }}`, `._is_selected`, `._is_filtered` | `{{ view.f.in_query }}`, `.is_selected`, `.is_filtered` |
+| `{{ _user_attributes['x'] }}` | `{{ omni_attributes.x }}` |
+| `{% if %}`, `{% assign %}`, loops, Liquid filters | not converted; the SQL block is left out and the construct is named in the report |
 | view `extends: [a, b]` | view `extends: [a, b]`; a field the parents define differently is written into the child (Looker: last parent wins, Omni: first) and tagged `resolved_from_extends` |
 | view `extension: required`, or a view with no table that is only extended | view `template: true`, without `schema` and `table_name` |
 | explore `join` | topic join plus an entry under the topic's `relationships:` |
@@ -125,7 +132,8 @@ Full rules: [rules/migration_rules.md](rules/migration_rules.md).
 - Explore mode does not rewrite join SQL for fields renamed by a merge.
 - The CSV `omni_view` / `omni_field` columns are tracking only.
 - References to Looker timeframe fields (for example `${created_date}`) are reported, not rewritten.
-- Not converted: `drill_fields`, `link`, `html`, `map_layer_name`, parameters, Liquid, `case`, `tiers`, and `tier`/`location`/`distance` dimensions.
+- Liquid converts only in derived table SQL and field `sql:`, only for the constructs in the table above, and only when every construct of the SQL block converts. `{% if %}`, `{% assign %}`, loops and Liquid filters stay manual, as does a `type: unquoted` parameter that is not clearly a whole identifier or a quoted string.
+- Not converted: `drill_fields`, `link`, `html`, `map_layer_name`, `case`, `tiers`, and `tier`/`location`/`distance` dimensions.
 - One view per run (no batch mode) and one topic per explore.
 
 ## Documentation

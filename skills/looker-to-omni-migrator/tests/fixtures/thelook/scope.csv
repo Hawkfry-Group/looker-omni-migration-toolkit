@@ -36,3 +36,8 @@ P0,products,count,measure,products,count,Team A,ready,
 P0,brand_sales,brand,dimension,brand_sales,brand,Data Team,ready,
 P0,brand_sales,total_sales,dimension,brand_sales,total_sales,Data Team,ready,
 P0,brand_sales,average_brand_sales,measure,brand_sales,average_brand_sales,Data Team,ready,
+P0,sales_by_period,user_id,dimension,sales_by_period,user_id,Team A,ready,
+P0,sales_by_period,selected_metric,dimension,sales_by_period,selected_metric,Team A,ready,Unquoted parameter
+P0,sales_by_period,metric_label,dimension,sales_by_period,metric_label,Team A,ready,Liquid if
+P0,sales_by_period,total_selected_metric,measure,sales_by_period,total_selected_metric,Team A,ready,
+P0,sales_by_period,unused_choice,filter,sales_by_period,unused_choice,Team A,ready,Filter-only field in scope

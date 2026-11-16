@@ -27,6 +27,9 @@ write is recorded in `planned_writes` and printed instead.
 - Tags rendered inline: `tags: [mig_phase_0, verified]`
 - Multi-line or long SQL rendered as a `|-` block
 - View-level `sql:` (SQL derived tables) is reformatted with `sqlparse`
+- SQL that holds Omni Mustache (`{{ ... }}`) is always a block scalar and is
+  not reformatted; a view whose converted SQL still holds Liquid is refused
+- Filter-only fields go under a top-level `filters:` key, after the measures
 - Blank lines between dimension/measure entries
 
 ## Example View Output
@@ -97,6 +100,7 @@ import io
 import os
 import re
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -105,6 +109,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
+from .liquid_translator import LiquidTranslation, assert_no_looker_liquid
 from .omni_models import (
     OmniView, OmniTopic, MigrationReport,
     view_to_yaml_dict, topic_to_yaml_dict
@@ -187,6 +192,12 @@ def _was_migrated(field: Dict) -> bool:
     return any(isinstance(t, str) and t.startswith('mig_phase_') for t in tags) and not field.get('hidden')
 
 
+def _dedent_sql(sql: str) -> str:
+    """Remove the indentation the lines after the first share (LookML indents the SQL body)"""
+    first, _, rest = sql.strip().partition('\n')
+    return first + ('\n' + textwrap.dedent(rest) if rest else '')
+
+
 def _union(a: Any, b: Any) -> List:
     return list(dict.fromkeys(list(a or []) + list(b or [])))
 
@@ -214,6 +225,11 @@ def _rewrite_field_refs(obj: Any, renames: Dict[str, str], view_name: Optional[s
             if view_name:
                 obj = re.sub(r'\$\{' + re.escape(view_name) + r'\.' + re.escape(old) + r'\}',
                              '${' + view_name + '.' + new + '}', obj)
+                # The same field named in a Mustache token: {{# view.old.filter }}, {{ filters.view.old.value }}
+                obj = re.sub(
+                    r'(\{\{[#/^]?\s*(?:filters\.)?' + re.escape(view_name) + r'\.)' + re.escape(old)
+                    + r'(\.[a-z_]+\s*\}\})',
+                    lambda match: match.group(1) + new + match.group(2), obj)
         return obj
     if isinstance(obj, dict):
         result = {}
@@ -639,6 +655,9 @@ class FileGenerator:
         # Fields merged under their column name: point every reference at it
         merged_dims = _rewrite_field_refs(merged_dims, applied_renames, view_name)
         merged_measures = _rewrite_field_refs(merged_measures, applied_renames, view_name)
+        if isinstance(merged.get('sql'), str):
+            # A derived table's Mustache tokens may name a renamed field too
+            merged['sql'] = _rewrite_field_refs(merged['sql'], applied_renames, view_name)
         if applied_renames:
             notes.append("Renamed references: " + ', '.join(f"{a} → {b}" for a, b in applied_renames.items()))
 
@@ -660,6 +679,9 @@ class FileGenerator:
             merged['dimensions'] = merged_dims
         if merged_measures:
             merged['measures'] = merged_measures
+        # Filter-only fields: the converted ones replace their namesakes, the others are kept
+        if new_view.get('filters'):
+            merged['filters'] = {**_as_dict(existing_view.get('filters')), **new_view['filters']}
 
         return merged, {'stats': stats, 'notes': notes, 'manual': manual, 'renames': dict(applied_renames)}
 
@@ -704,13 +726,20 @@ class FileGenerator:
             info.update(merge_info)
         info['final'] = view_dict
 
+        # Final guard: nothing this run converted may still hold Liquid
+        generated = view.model_dump(exclude_none=True)
+        assert_no_looker_liquid(generated.get('sql'), "the view sql")
+        for section in ('dimensions', 'measures'):
+            for field_name, field_data in (generated.get(section) or {}).items():
+                assert_no_looker_liquid(field_data.get('sql'), f"the sql of {field_name}")
+
         if view_dict.get('sql'):
-            formatted_sql = sqlparse.format(
-                str(view_dict['sql']),
-                reindent=True,
-                keyword_case='upper',
-                indent_width=2
-            )
+            view_sql = str(view_dict['sql'])
+            if '{{' in view_sql:
+                # Templated SQL is written as it is: a formatter does not know Mustache
+                formatted_sql = _dedent_sql(view_sql)
+            else:
+                formatted_sql = sqlparse.format(view_sql, reindent=True, keyword_case='upper', indent_width=2)
             view_dict['sql'] = LiteralScalarString(formatted_sql)
 
         view_dict = self._add_yaml_spacing(view_dict)
@@ -720,7 +749,8 @@ class FileGenerator:
             for field_data in (view_dict.get(section) or {}).values():
                 if isinstance(field_data, dict) and isinstance(field_data.get('sql'), str):
                     field_sql = field_data['sql']
-                    if '\n' in field_sql or len(field_sql) > 80:
+                    # A plain scalar must not start with `{{`: templated SQL is always a block scalar
+                    if '\n' in field_sql or len(field_sql) > 80 or '{{' in field_sql:
                         field_data['sql'] = LiteralScalarString(field_sql)
 
         return self._add_blank_lines_to_yaml(self._dump_yaml(view_dict)), info
@@ -761,29 +791,31 @@ class FileGenerator:
         """
         Order top-level keys: known view keys first, then any other keys
         (preserved as-is, e.g. dbt or required_access_grants), then
-        dimensions and measures.
+        dimensions, measures and filters (filter-only fields).
         """
         ordered_dict = {}
         for key in _VIEW_KEY_ORDER:
             if key in view_dict:
                 ordered_dict[key] = view_dict[key]
         for key, value in view_dict.items():
-            if key not in ordered_dict and key not in ('dimensions', 'measures'):
+            if key not in ordered_dict and key not in ('dimensions', 'measures', 'filters'):
                 ordered_dict[key] = value
         if view_dict.get('dimensions'):
             ordered_dict['dimensions'] = view_dict['dimensions']
         if view_dict.get('measures'):
             ordered_dict['measures'] = view_dict['measures']
+        if view_dict.get('filters'):
+            ordered_dict['filters'] = view_dict['filters']
         return ordered_dict
 
     def _add_blank_lines_to_yaml(self, yaml_content: str) -> str:
-        """Add blank lines before dimensions/measures and between their entries"""
+        """Add blank lines before dimensions/measures/filters and between their entries"""
         lines = yaml_content.split('\n')
         result = []
         in_fields = False
 
         for line in lines:
-            if line.startswith('dimensions:') or line.startswith('measures:'):
+            if line.startswith(('dimensions:', 'measures:', 'filters:')):
                 in_fields = True
                 if result and result[-1].strip():
                     result.append('')
@@ -907,6 +939,9 @@ class ConversionReportBuilder:
         # Advanced features (templated views, access grants, etc.)
         self.advanced_features: List[Dict[str, str]] = []
 
+        # Liquid translated to Mustache: (SQL block, translation)
+        self.liquid_translations: List[Tuple[str, LiquidTranslation]] = []
+
         # Merge/enrich tracking
         self.merge_source: Optional[str] = None  # Path to existing Omni view used for merge
         self.merge_stats: Dict[str, int] = {}
@@ -942,6 +977,14 @@ class ConversionReportBuilder:
         if action_required:
             feature_info['action_required'] = action_required
         self.advanced_features.append(feature_info)
+
+    def add_liquid_translation(self, where: str, translation: LiquidTranslation):
+        """Record the Liquid translated in one SQL block (`where` names the block)"""
+        self.liquid_translations.append((where, translation))
+
+    def liquid_attributes(self) -> List[str]:
+        """User attributes the translated SQL reads, in first-use order"""
+        return list(dict.fromkeys(name for _, t in self.liquid_translations for name in t.attributes))
 
     def add_dimension_result(self, field_name: str, result: ConversionResult):
         """Add dimension conversion result"""
@@ -1117,7 +1160,11 @@ class ConversionReportBuilder:
             not_converted=self.not_converted,
             notes_risks=notes_risks,
             advanced_features=self.advanced_features if self.advanced_features else None,
-            merge_info=merge_info
+            merge_info=merge_info,
+            liquid_translated=[
+                {'where': where, 'items': list(translation.translated)}
+                for where, translation in self.liquid_translations
+            ] or None
         )
 
         return report

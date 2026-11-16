@@ -56,7 +56,8 @@ explore: order_items {
 | Explore `sql_always_where` / `sql_always_having` | Topic `always_where_sql` / `always_having_sql` | Verify the rows match |
 | Explore `always_filter`, `conditionally_filter`, `fields:` restrictions, join-level grants | Not carried | Recreate by hand |
 | View-level `required_access_grants` or `access_filter` | Reported | Recreate by hand |
-| Liquid `_user_attributes` in SQL | Field not converted; reported | Rewrite by hand |
+| `{{ _user_attributes['x'] }}` used as a value in SQL | Translated to `{{ omni_attributes.x }}`; reported | Create the user attribute in Omni |
+| `_user_attributes` inside `{% if %}` or with a Liquid filter | Field not converted; reported | Rewrite by hand |
 
 Every one of these appears in the console summary and in the report. Restrictions are never dropped silently.
 

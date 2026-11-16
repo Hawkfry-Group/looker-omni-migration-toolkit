@@ -114,6 +114,11 @@ The console ends with `⚠️ COMPLETED WITH N ITEM(S) NEEDING MANUAL ACTION` an
 | `CSV fields inherited through extends are not written in ...` | The rows name fields a parent view defines. List them in the CSV under that parent and migrate it |
 | `...: depends on inherited field x (from view p), which is not migrated` | The parent view cannot convert `x`. Fix it there first |
 | `No CSV rows for template view ...` | The template was migrated with every field hidden. Add its fields to the CSV under the template's name |
+| `...: MANUAL ACTION REQUIRED: sql uses Liquid that is not converted automatically: ...` | The constructs named have no exact Omni equivalent (`{% if %}`, a tag inside a longer quoted string, an unresolved reference, ...). Rewrite that SQL by hand with Omni Mustache |
+| `the derived table sql uses Liquid that is not converted automatically: ...` (exit 1) | Same, for a derived table: the view is not written. Migrate it by hand |
+| `User attributes used in translated SQL; create them in Omni: ...` | Create each user attribute in Omni under the same name |
+| `x: \`type: column\` quotes the value as an identifier ...` | Check each allowed value of the parameter is a full column or `schema.table` name |
+| `...: the \`type: unquoted\` parameter is used both as an identifier and as a quoted string ...` | An Omni filter-only field has one type. Split the parameter in two, or rewrite the SQL by hand |
 | `Join x (NOT migrated): sql_on uses Liquid...` | Write the relationship by hand |
 | `always_filter (NOT carried)` | The expression is outside the translated forms, or has no value. Add a `default_filters` entry with `required: true` to the topic by hand |
 | `always_filter (carried)` | Check the required default filter returns the same rows, and that the field has that name in Omni |

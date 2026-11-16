@@ -94,11 +94,88 @@ gross_margin:
 
 ### Not converted
 
-`type: tier`, `location` or `distance`, `case`, `tiers`, Liquid, quoted `${TABLE}."col"`, a bare `${TABLE}`, or `${...}` inside a string literal or comment. The field is not written:
+`type: tier`, `location` or `distance`, `case`, `tiers`, Liquid with no exact Omni equivalent, quoted `${TABLE}."col"`, a bare `${TABLE}`, or `${...}` inside a string literal or comment. The field is not written:
 
 ```
 price_tier: MANUAL ACTION REQUIRED: dimension type 'tier' has no automatic Omni conversion
+metric_label: MANUAL ACTION REQUIRED: sql uses Liquid that is not converted automatically: `{% if %}` (conditional logic: Omni cannot remove SQL text); `{% else %}` (...); `{% endif %}` (...)
 ```
+
+## Liquid, parameters and filter-only fields
+
+### Parameter and filter-only field
+
+```lkml
+parameter: metric {
+  type: unquoted
+  allowed_value: { label: "Revenue" value: "revenue" }
+  allowed_value: { label: "Cost" value: "cost" }
+  default_value: "revenue"
+}
+
+filter: status_pick {
+  type: string
+  suggest_dimension: order_items.status
+  default_value: "Complete"
+}
+
+dimension: selected_metric {
+  type: number
+  sql: ${TABLE}.{% parameter metric %} ;;
+}
+```
+
+```yaml
+dimensions:
+  selected_metric:
+    sql: |-
+      {{ filters.sales_by_period.metric.value }}
+
+filters:
+  metric:
+    type: column
+    suggestion_list:
+    - value: revenue
+      label: Revenue
+    - value: cost
+      label: Cost
+    default_filter:
+      is: revenue
+    filter_single_select_only: true
+
+  status_pick:
+    type: string
+    suggest_from_field: order_items.status
+    default_filter:
+      is: Complete
+```
+
+`metric` is `type: unquoted` and used as a column of the table, so it becomes `type: column` (Omni quotes the value as an identifier) and `${TABLE}.` is dropped. Used as `'{% parameter metric %}'` it would become `type: string`, with the quotes dropped.
+
+### Liquid in SQL
+
+| Looker | Omni |
+|--------|------|
+| `{% condition view.f %} expr {% endcondition %}` | `{{# view.f.filter }} expr {{/ view.f.filter }}` |
+| `{% parameter view.p %}`, `{{ view.p._parameter_value }}` | `{{ filters.view.p.value }}` |
+| `{% date_start view.f %}`, `{% date_end view.f %}` | `{{ filters.view.f.range_start }}`, `{{ filters.view.f.range_end }}` |
+| `{{ view.f._in_query }}`, `._is_selected`, `._is_filtered` (used as a value) | `{{ view.f.in_query }}`, `.is_selected`, `.is_filtered` |
+| `{{ view._in_query }}` | `{{ view.in_query }}` |
+| `{{ _user_attributes['x'] }}` | `{{ omni_attributes.x }}` |
+| `{% if %}`, `{% elsif %}`, `{% else %}`, `{% assign %}`, loops, Liquid filters (`\| upcase`), any other `{{ ... }}` | not converted (MANUAL); the report names the construct |
+
+A SQL block converts only when every construct in it converts. Quote handling is exact:
+
+| Looker SQL | Result |
+|------------|--------|
+| `x = {% parameter p %}` (string or number) | `x = {{ filters.view.p.value }}` |
+| `x = '{% parameter p %}'` (string, or unquoted used as a string) | `x = {{ filters.view.p.value }}` (Omni adds the quotes) |
+| `x LIKE '%{% parameter p %}%'`, `"prefix_{% parameter p %}"` | not converted: the tag is embedded in a longer string or identifier |
+| `${TABLE}.{% parameter p %}`, `FROM {% parameter p %}`, `"{% parameter p %}"` (unquoted) | `{{ filters.view.p.value }}` with `type: column` |
+| `DATE_TRUNC({% parameter p %}, x)` (unquoted) | not converted: the value may be a keyword |
+| `region = '{{ _user_attributes['region'] }}'` | `region = '{{ omni_attributes.region }}'` (quotes kept) |
+
+Rules and edge cases: [../rules/migration_rules.md](../rules/migration_rules.md).
 
 ## Dates
 

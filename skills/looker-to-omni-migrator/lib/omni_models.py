@@ -173,6 +173,39 @@ class OmniMeasure(BaseModel):
         return self
 
 
+class OmniFilter(BaseModel):
+    """
+    Omni filter-only field (a view's top-level `filters:` entry)
+
+    It holds no column. Its value is read in SQL through Mustache:
+    `{{# view.field.filter }} expr {{/ view.field.filter }}`,
+    `{{ filters.view.field.value }}`, `.range_start`, `.range_end`.
+    Converted from a Looker `filter:` or `parameter:`.
+    """
+    type: Literal["string", "number", "timestamp", "boolean", "column"] = Field(
+        ..., description="Value type. `column` renders the value as a quoted identifier")
+    label: Optional[str] = None
+    description: Optional[str] = None
+    group_label: Optional[str] = None
+    hidden: Optional[bool] = None
+    suggestion_list: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Allowed values: items with `value` and an optional `label`")
+    suggest_from_field: Optional[str] = Field(None, description="view.field whose values are suggested")
+    default_filter: Optional[Dict[str, Any]] = Field(None, description="Value used when none is given, e.g. {is: a}")
+    filter_single_select_only: Optional[bool] = Field(None, description="Force a single value (Looker parameter)")
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator('suggestion_list')
+    @classmethod
+    def validate_suggestions(cls, v):
+        """Every suggestion needs a value"""
+        for item in v or []:
+            if 'value' not in item or item['value'] is None or set(item) - {'value', 'label'}:
+                raise ValueError("suggestion_list items take `value` and an optional `label`")
+        return v
+
+
 class OmniQuery(BaseModel):
     """
     Omni native derived table (query-based)
@@ -224,6 +257,7 @@ class OmniView(BaseModel):
     # Fields
     dimensions: Optional[Dict[str, OmniDimension]] = Field(default_factory=dict)
     measures: Optional[Dict[str, OmniMeasure]] = Field(default_factory=dict)
+    filters: Optional[Dict[str, OmniFilter]] = Field(None, description="Filter-only fields (Looker filter and parameter)")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -366,6 +400,8 @@ class MigrationReport(BaseModel):
     notes_risks: List[Dict[str, str]]
     advanced_features: Optional[List[Dict[str, str]]] = None  # NEW: templated views, access grants, etc.
     merge_info: Optional[Dict[str, Any]] = None  # Merge/enrich stats when existing Omni view was found
+    # Liquid translated to Omni Mustache: [{'where': SQL block, 'items': ["`looker` → `omni`"]}]
+    liquid_translated: Optional[List[Dict[str, Any]]] = None
 
     def to_markdown(self) -> str:
         """Convert to markdown report"""
@@ -431,6 +467,15 @@ class MigrationReport(BaseModel):
         else:
             md += "(none)\n"
         md += "\n"
+
+        if self.liquid_translated:
+            md += "## Liquid translated\n"
+            md += "Looker Liquid rewritten as Omni Mustache. Check each one against Looker.\n\n"
+            for block in self.liquid_translated:
+                md += f"- **{block['where']}**\n"
+                for item in block['items']:
+                    md += f"  - {item}\n"
+            md += "\n"
 
         # NEW: Advanced Features section
         if self.advanced_features:

@@ -11,6 +11,7 @@ Handles the field-level conversion from Looker to Omni:
 1. Dimension conversion (type removal, SQL cleaning)
 2. Measure conversion (type -> aggregate_type, filters, format)
 3. Dimension group conversion (dimension_group -> one date dimension)
+   and filter-only fields (`filter:` / `parameter:` -> an Omni `filters:` entry)
 4. Canonical label mapping (optional, from `--config`)
 5. Metadata generation (ai_context, synonyms, tags)
 6. Dependency detection (same-view `${field}` references)
@@ -61,7 +62,7 @@ full_name:
 | `${field}` | `${field}` | Same-view reference, recorded as a dependency |
 | `${view.field}` | `${view.field}` | Cross-view reference, unchanged; the view must be joined in the topic |
 | `${TABLE}."col"`, `${TABLE}` not followed by a column, `${...}` inside quotes/comments | not converted | MANUAL ACTION REQUIRED |
-| `{% ... %}` / `{{ ... }}` | not converted | Liquid has no Omni equivalent: MANUAL ACTION REQUIRED |
+| `{% ... %}` / `{{ ... }}` | Omni Mustache, or not converted | Translated when every construct of the sql has an exact equivalent (see `liquid_translator`), else MANUAL ACTION REQUIRED naming the construct |
 
 String literals, quoted identifiers and comments are never rewritten.
 
@@ -144,7 +145,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .config import DEFAULT_CANONICAL_MAPPINGS
-from .omni_models import AggregateType, OmniDimension, OmniMeasure
+from .liquid_translator import (
+    FILTER_TYPE_MAP,
+    MUSTACHE_RE,
+    LiquidContext,
+    LiquidTranslation,
+    contains_liquid,
+    translate_liquid,
+)
+from .omni_models import AggregateType, OmniDimension, OmniFilter, OmniMeasure
 
 
 def normalize_tag(tag: str) -> str:
@@ -218,7 +227,6 @@ DROPPED_FIELD_PARAMS = ('drill_fields', 'link', 'links', 'html', 'map_layer_name
 MANUAL = "MANUAL ACTION REQUIRED"
 
 _IDENT = r'[a-zA-Z_][a-zA-Z0-9_]*'
-_LIQUID_RE = re.compile(r'\{%.*?%\}|\{\{.*?\}\}', re.DOTALL)
 _COMPARISON_KEYS = {
     '>=': 'greater_than_or_equal_to',
     '<=': 'less_than_or_equal_to',
@@ -238,6 +246,7 @@ class ConversionResult:
     db_column_name: Optional[str] = None  # Warehouse column when it differs from the field name
     cross_view_refs: Set[str] = field(default_factory=set)  # "view.field" references
     dropped_params: List[str] = field(default_factory=list)  # e.g. drill_fields, html
+    liquid: Optional[LiquidTranslation] = None  # Liquid translated to Mustache in the field's sql
 
 
 def _sentence(text: str) -> str:
@@ -247,8 +256,27 @@ def _sentence(text: str) -> str:
 
 
 def has_liquid(text: Optional[str]) -> bool:
-    """True if the text contains Liquid tags or output blocks"""
-    return bool(text) and bool(_LIQUID_RE.search(text))
+    """True if the text contains Liquid tags or output blocks (closed or not)"""
+    return contains_liquid(text)
+
+
+def mask_mustache(sql: str) -> Tuple[str, List[str]]:
+    """
+    Replace every Mustache token with an inert placeholder, so SQL rewriting
+    never touches the view and field names inside a token. Undo with
+    `unmask_mustache`.
+    """
+    tokens: List[str] = []
+
+    def _mask(match):
+        tokens.append(match.group(0))
+        return f"\x00{len(tokens) - 1}\x00"
+
+    return MUSTACHE_RE.sub(_mask, sql), tokens
+
+
+def unmask_mustache(sql: str, tokens: List[str]) -> str:
+    return re.sub(r'\x00(\d+)\x00', lambda match: tokens[int(match.group(1))], sql)
 
 
 class UnsafeSQL(Exception):
@@ -463,7 +491,8 @@ class RuleApplier:
         canonical_mappings: Optional[Dict[str, str]] = None,
         column_fields: Optional[Dict[str, str]] = None,
         field_types: Optional[Dict[str, str]] = None,
-        type_resolver: Optional[Callable[[str, str], Optional[str]]] = None
+        type_resolver: Optional[Callable[[str, str], Optional[str]]] = None,
+        liquid_context: Optional[LiquidContext] = None
     ):
         self.phase = phase
         self.verified = verified
@@ -476,6 +505,9 @@ class RuleApplier:
         self.field_types: Dict[str, str] = dict(field_types or {})
         # Looks up the Looker type of `view.field` in other views
         self.type_resolver = type_resolver
+        # Resolves the fields named in Liquid tags. Without it only Liquid
+        # that names no field (user attributes) can be translated.
+        self.liquid_context = liquid_context or LiquidContext()
         # Organization-specific term mappings; empty unless configured
         self.canonical_mappings = dict(
             canonical_mappings if canonical_mappings is not None else CANONICAL_MAPPINGS
@@ -572,7 +604,9 @@ class RuleApplier:
 
         out = []
         rewrote_table = rewrote_view = False
-        for text, is_code in split_sql(sql.strip()):
+        # Mustache tokens (translated Liquid) hold view and field names: keep them out of the rewriting
+        masked, mustache = mask_mustache(sql.strip())
+        for text, is_code in split_sql(masked):
             if not is_code:
                 if '${' in text:
                     raise UnsafeSQL(
@@ -599,7 +633,7 @@ class RuleApplier:
             changes.append("Converted ${TABLE}.column (field reference only when a field is exactly that column, else raw column)")
         if rewrote_view:
             changes.append(f"Converted {self.view_name}.column the same way as ${{TABLE}}.column")
-        return ''.join(out), changes, warnings
+        return unmask_mustache(''.join(out), mustache), changes, warnings
 
     def extract_db_column_name(self, sql: Optional[str], field_name: str) -> Optional[str]:
         """
@@ -668,6 +702,48 @@ class RuleApplier:
                 return self.type_resolver(view, name) if self.type_resolver else None
             field_ref = name
         return self.field_types.get(field_ref)
+
+    def _translate_liquid(
+        self,
+        sql: str,
+        changes: List[str],
+        warnings: List[str]
+    ) -> Tuple[Optional[str], Optional[LiquidTranslation]]:
+        """
+        Translate the Liquid of a field's sql to Omni Mustache
+
+        Returns:
+            (sql, translation): the sql unchanged and None when it holds no
+            Liquid. (None, translation) when a construct cannot be
+            translated: the reason, naming each construct, is added to
+            `warnings` and the field must not be written.
+        """
+        if not has_liquid(sql):
+            return sql, None
+        translation = translate_liquid(sql, self.liquid_context)
+        if translation.sql is None:
+            warnings.append(f"{MANUAL}: {translation.reason}")
+            return None, translation
+        changes.extend(f"Liquid translated: {item}" for item in translation.translated)
+        return translation.sql, translation
+
+    def _liquid_references(
+        self,
+        translation: Optional[LiquidTranslation],
+        dependencies: Set[str],
+        cross_view_refs: Set[str]
+    ):
+        """
+        Record the fields a translated block names in its tokens: the
+        dimensions and measures of the view as dependencies, the fields of
+        other views as cross-view references. The view's own filter-only
+        fields are always written and need no entry here.
+        """
+        for target in (translation.fields if translation else []):
+            if not target.local:
+                cross_view_refs.add(target.token)
+            elif target.kind not in ('parameter', 'filter'):
+                dependencies.add(target.name)
 
     def _dropped_params(self, looker_field: Dict) -> List[str]:
         return [p for p in DROPPED_FIELD_PARAMS if looker_field.get(p)]
@@ -802,9 +878,8 @@ class RuleApplier:
                 return self._failed(changes, warnings, dropped=dropped)
 
         # Looker defaults sql to ${TABLE}.<field name>
-        sql_raw = looker_dim.get('sql') or '${TABLE}.' + field_name
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(looker_dim.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         db_column_name = self.extract_db_column_name(sql_raw, field_name)
@@ -821,6 +896,8 @@ class RuleApplier:
 
         dependencies = self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
 
         label = looker_dim.get('label', field_name.replace('_', ' ').title())
         label_mapped, label_mapping_changes = self.apply_canonical_mapping(label)
@@ -876,7 +953,8 @@ class RuleApplier:
             risk_level=risk_level,
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
-            dropped_params=dropped
+            dropped_params=dropped,
+            liquid=liquid
         )
 
     def convert_measure(
@@ -919,8 +997,8 @@ class RuleApplier:
                 return self._failed(changes, warnings, dropped=dropped)
             sql_raw = '${' + list_field + '}'
 
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(sql_raw, changes, warnings)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         if sql_raw:
@@ -945,6 +1023,8 @@ class RuleApplier:
 
         dependencies = self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
 
         label = looker_measure.get('label', field_name.replace('_', ' ').title())
         label_mapped, label_changes = self.apply_canonical_mapping(label)
@@ -1025,7 +1105,8 @@ class RuleApplier:
             dependencies=dependencies,
             risk_level=risk_level,
             cross_view_refs=cross_view_refs,
-            dropped_params=dropped
+            dropped_params=dropped,
+            liquid=liquid
         )
 
     def convert_dimension_group(
@@ -1078,9 +1159,9 @@ class RuleApplier:
                 warnings.append(f"{MANUAL}: dimension_group uses {param}, which is not converted automatically")
                 return self._failed(changes, warnings, dropped=dropped)
 
-        sql_raw = looker_dim_group.get('sql') or '${TABLE}.' + field_name
-        if has_liquid(sql_raw):
-            warnings.append(f"{MANUAL}: sql uses Liquid templating, which Omni does not support")
+        sql_raw, liquid = self._translate_liquid(
+            looker_dim_group.get('sql') or '${TABLE}.' + field_name, changes, warnings)
+        if sql_raw is None:
             return self._failed(changes, warnings, dropped=dropped)
 
         try:
@@ -1101,6 +1182,8 @@ class RuleApplier:
 
         dependencies = set() if is_standard_sql else self.extract_dependencies(sql_clean) - {field_name}
         cross_view_refs = self.extract_cross_view_references(sql_clean)
+        self._liquid_references(liquid, dependencies, cross_view_refs)
+        dependencies.discard(field_name)
         db_column_name = self.extract_db_column_name(sql_raw, field_name)
 
         looker_label = looker_dim_group.get('label')
@@ -1153,5 +1236,150 @@ class RuleApplier:
             risk_level=risk_level,
             db_column_name=db_column_name,
             cross_view_refs=cross_view_refs,
+            dropped_params=dropped,
+            liquid=liquid
+        )
+
+    def convert_filter_field(
+        self,
+        field_name: str,
+        looker_field: Dict,
+        kind: str,
+        omni_type: Optional[str] = None
+    ) -> ConversionResult:
+        """
+        Convert a Looker `filter:` or `parameter:` to an Omni filter-only field
+
+        Looker:
+          parameter: metric {
+            type: string
+            allowed_value: { label: "Revenue" value: "revenue" }
+            default_value: "revenue"
+          }
+
+        Omni (under the view's `filters:` key):
+          metric:
+            type: string
+            suggestion_list:
+              - value: revenue
+                label: Revenue
+            default_filter:
+              is: revenue
+            filter_single_select_only: true
+
+        Args:
+            kind: 'filter' or 'parameter'
+            omni_type: Omni type of a `type: unquoted` parameter ('column'
+                when the SQL uses it as an identifier, else 'string')
+        """
+        changes: List[str] = []
+        warnings: List[str] = []
+        risk_level = "LOW"
+
+        def review(note: str):
+            nonlocal risk_level
+            warnings.append(note)
+            risk_level = "MEDIUM"
+
+        looker_type = looker_field.get('type') or 'string'
+        if kind == 'filter' and looker_field.get('sql'):
+            warnings.append(
+                f"{MANUAL}: the filter has `sql:`, a condition Looker adds to the query when the filter is used. "
+                f"A filter-only field has no such parameter in Omni"
+            )
+            return self._failed(changes, warnings)
+        if kind == 'parameter' and looker_type == 'unquoted':
+            filter_type = omni_type or 'string'
+            changes.append(f"Mapped type: unquoted → {filter_type}")
+        else:
+            filter_type = FILTER_TYPE_MAP.get(looker_type)
+            if filter_type is None:
+                warnings.append(f"{MANUAL}: {kind} type '{looker_type}' has no Omni filter-only field type")
+                return self._failed(changes, warnings)
+            if filter_type != looker_type:
+                changes.append(f"Mapped type: {looker_type} → {filter_type}")
+
+        kwargs: Dict[str, Any] = {'type': filter_type}
+        for key in ('label', 'description', 'group_label'):
+            value = looker_field.get(key)
+            if not value:
+                continue
+            if has_liquid(value):
+                review(f"`{key}` uses Liquid and was not migrated")
+                continue
+            if key == 'label':
+                value, mapping_changes = self.apply_canonical_mapping(value)
+                changes.extend(mapping_changes)
+            kwargs[key] = value
+
+        def typed(value: Any) -> Any:
+            """A Looker value in the YAML type of the filter"""
+            text = str(value).strip()
+            if filter_type == 'number' and re.fullmatch(_SIGNED_NUMBER, text):
+                return _number(text)
+            if filter_type == 'boolean' and text.lower() in ('yes', 'no', 'true', 'false'):
+                return text.lower() in ('yes', 'true')
+            return value
+
+        suggestions = []
+        for allowed in looker_field.get('allowed_values') or []:
+            if not isinstance(allowed, dict) or allowed.get('value') is None:
+                continue
+            item = {'value': typed(allowed['value'])}
+            if allowed.get('label'):
+                item['label'] = allowed['label']
+            suggestions.append(item)
+        for value in looker_field.get('suggestions') or []:
+            suggestions.append({'value': typed(value)})
+        if suggestions:
+            kwargs['suggestion_list'] = suggestions
+            changes.append(f"allowed values → suggestion_list ({len(suggestions)} value(s))")
+
+        suggest_dimension = looker_field.get('suggest_dimension')
+        if suggest_dimension:
+            if '.' not in suggest_dimension and self.view_name:
+                suggest_dimension = f"{self.view_name}.{suggest_dimension}"
+            kwargs['suggest_from_field'] = suggest_dimension
+            changes.append(f"suggest_dimension → suggest_from_field: {suggest_dimension}")
+
+        default = looker_field.get('default_value')
+        if default is not None and str(default).strip():
+            condition = None
+            if filter_type == 'timestamp':
+                pass  # a Looker date expression: no confirmed Omni form
+            elif kind == 'parameter':
+                condition = {'is': typed(default)}
+            else:
+                condition = translate_filter_expression(default, filter_kind(looker_type))
+            if condition is None:
+                review(f"default_value \"{default}\" not migrated; set `default_filter` by hand")
+            else:
+                kwargs['default_filter'] = condition
+                changes.append("default_value → default_filter")
+
+        if kind == 'parameter':
+            # A Looker parameter holds exactly one value
+            kwargs['filter_single_select_only'] = True
+        if looker_field.get('hidden') == 'yes':
+            kwargs['hidden'] = True
+            changes.append("Marked as hidden: true")
+
+        handled = {'name', 'type', 'label', 'description', 'group_label', 'allowed_values', 'suggestions',
+                   'suggest_dimension', 'default_value', 'hidden', 'sql'}
+        dropped = sorted(key for key in looker_field if key not in handled)
+        for key in dropped:
+            changes.append(f"Not migrated: {key}")
+
+        try:
+            omni_filter = OmniFilter(**kwargs)
+        except Exception as e:
+            warnings.append(f"Validation error: {e}")
+            return self._failed(changes, warnings, dropped=dropped)
+        return ConversionResult(
+            omni_field=omni_filter,
+            changes=changes,
+            warnings=warnings,
+            dependencies=set(),
+            risk_level=risk_level,
             dropped_params=dropped
         )

@@ -14,6 +14,7 @@ as MANUAL ACTION REQUIRED in the report, the console and
 - looker_parser: LookML view parsing (stops on duplicate view definitions,
   reports refinements)
 - rule_applier: field conversion rules
+- liquid_translator: Liquid in SQL to Omni Mustache
 - file_generators: YAML/Markdown output, merge, dry-run, atomic writes
 - explore_analyzer: explore parsing and topic suggestions
 - access_grant_parser: access grant registry
@@ -31,7 +32,13 @@ as MANUAL ACTION REQUIRED in the report, the console and
    with no table that is only extended, becomes a template (`template: true`,
    no `schema`, no `table_name`). A parent that cannot be found leaves the
    view unresolved and reported.
-3. **Convert fields** - every field of the view is converted. In-scope fields
+3. **Convert fields** - every field of the view is converted. Liquid in a
+   field's `sql` (and in a derived table's SQL) is translated to Omni
+   Mustache when every construct of the block has an exact equivalent
+   (`liquid_translator`); otherwise the field is not written (a derived view
+   stops) and the report names the construct. Parameters and filter-only
+   fields are written under the view's `filters:` key: visible when the CSV
+   lists them (type `filter`) or SQL names them, hidden otherwise. In-scope fields
    are written visible; other fields are written `hidden: true` with the tag
    `in_omni_in_looker_not_csv`. Out-of-scope fields referenced by in-scope
    fields (transitively) are written visible with the tag `auto_dependency`.
@@ -99,7 +106,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .access_grant_parser import load_access_grants
 from .config import MigrationConfig
-from .context_loader import get_fields_for_view, load_migration_context
+from .context_loader import get_fields_for_view, load_and_filter_csv, load_migration_context
 from .explore_analyzer import (
     ExploreInfo,
     JoinDefinition,
@@ -112,6 +119,16 @@ from .explore_analyzer import (
     suggest_topic_divisions,
 )
 from .file_generators import ConversionReportBuilder, FileGenerator, MergeError
+from .liquid_translator import (
+    FILTER_KINDS,
+    FILTER_TYPE_MAP,
+    LiquidContext,
+    LiquidField,
+    LiquidTranslation,
+    scan_liquid,
+    translate_liquid,
+    unquoted_use_form,
+)
 from .looker_parser import (
     LookerView,
     ViewExtendsResolution,
@@ -119,10 +136,11 @@ from .looker_parser import (
     effective_view,
     load_views,
     own_fields,
+    own_filter_fields,
     resolve_view_extends,
     view_from_index,
 )
-from .omni_models import OmniDimension, OmniMeasure, OmniQuery, OmniTopic, OmniView
+from .omni_models import OmniDimension, OmniFilter, OmniMeasure, OmniQuery, OmniTopic, OmniView
 from .rule_applier import (
     MANUAL,
     ConversionResult,
@@ -231,6 +249,8 @@ class MigrationOrchestrator:
         self._exposed_cache: Dict[str, Dict[str, ExposedField]] = {}
         self._explore_views_cache: Optional[Set[str]] = None
         self._explore_cache: Optional[Tuple[Dict[str, List[ExploreInfo]], Dict[str, List[str]]]] = None
+        self._alias_cache: Optional[Dict[str, Set[str]]] = None
+        self._liquid_usage_cache: Optional[Dict[Tuple[str, str], List[Tuple[str, Optional[str]]]]] = None
 
         # Raises ValueError on duplicate grant names
         self.access_grants = load_access_grants(str(looker_repo))
@@ -292,14 +312,23 @@ class MigrationOrchestrator:
             # plus the fields two parents define differently)
             resolution = self._view_resolution(view_name)
             inheritance = resolution if resolution is not None and not resolution.problem else None
-            looker_view = effective_view(declared_view, inheritance) if inheritance else declared_view
             inherited = self._inherited_exposure(inheritance) if inheritance else {}
+            # Inherited fields whose Mustache tokens must name this view, not the parent
+            retargeted = self._retargeted_fields(declared_view, inheritance, inherited) if inheritance else set()
+            looker_view = effective_view(declared_view, inheritance, also=retargeted) if inheritance else declared_view
+            declared_names = set(own_fields(declared_view)) | set(own_filter_fields(declared_view))
             resolved_fields = {name: f for name, f in inheritance.conflicts.items()
-                               if name not in own_fields(declared_view)} if inheritance else {}
+                               if name not in declared_names} if inheritance else {}
+            # Parameters and filter-only fields this view writes, and the ones a parent writes
+            filter_fields = own_filter_fields(looker_view)
+            inherited_filters = {name: f.origin for name, f in inheritance.fields.items()
+                                 if f.kind in FILTER_KINDS and name not in filter_fields} if inheritance else {}
             print(f"      ✓ Found: {looker_view.file_path}")
             print(f"      ✓ Dimensions: {len(looker_view.dimensions)}")
             print(f"      ✓ Dimension groups: {len(looker_view.dimension_groups)}")
             print(f"      ✓ Measures: {len(looker_view.measures)}")
+            if filter_fields:
+                print(f"      ✓ Filter-only fields and parameters: {len(filter_fields)}")
             if inheritance:
                 print(f"      ✓ Extends: {', '.join(inheritance.parents)} ({len(inherited)} inherited field(s))")
 
@@ -311,11 +340,22 @@ class MigrationOrchestrator:
             )
 
             kinds = self._field_kinds(looker_view)
-            scope = self._resolve_scope(csv_fields, kinds, looker_view, view_name, report_builder, issues, inherited)
+            scope = self._resolve_scope(csv_fields, kinds, looker_view, view_name, report_builder, issues, inherited,
+                                        filter_fields, inherited_filters)
             in_scope_names: Set[str] = set().union(*scope.values())
+            # A field rewritten from a parent keeps the visibility the CSV gives it there
+            parent_scope: Dict[str, Set[str]] = {}
+            for name in sorted(retargeted):
+                origin = inherited[name].origin
+                if origin not in parent_scope:
+                    parent_scope[origin] = {row.get('field') for row in load_and_filter_csv(
+                        str(self.csv_path), owner, phase, origin)}
+                if name in parent_scope[origin]:
+                    in_scope_names.add(name)
 
             self._flag_view_features(looker_view, report_builder, issues, resolution)
 
+            source_liquid: List[LiquidTranslation] = []  # Liquid translated in the derived table SQL
             is_template, template_reason = self._view_template_decision(declared_view)
             if is_template:
                 # A template has no table: the views that extend it supply one
@@ -336,7 +376,8 @@ class MigrationOrchestrator:
                 # Fail fast on a source that cannot be converted
                 schema, view_source = self._determine_view_source(
                     looker_view, report_builder, issues,
-                    inherited_source=inheritance.source if inheritance else None
+                    inherited_source=inheritance.source if inheritance else None,
+                    translations=source_liquid
                 )
 
             # ---------------- Step 3: convert ----------------
@@ -417,7 +458,7 @@ class MigrationOrchestrator:
                     result.omni_field.tags = [PROVENANCE_TAG]
                     hidden_count += 1
                     report_builder.add_not_converted(name, "Not in CSV scope - added with hidden: true")
-                if name in resolved_fields:
+                if name in resolved_fields or name in retargeted:
                     result.omni_field.tags = list(result.omni_field.tags) + [RESOLVED_FROM_EXTENDS_TAG]
 
                 target = omni_measures if kind == 'measure' else omni_dimensions
@@ -425,9 +466,22 @@ class MigrationOrchestrator:
                 if result.db_column_name:
                     field_to_column_mapping[name] = result.db_column_name
                 cross_view_refs |= result.cross_view_refs
+                if result.liquid:
+                    report_builder.add_liquid_translation(f"{kind.replace('_', ' ')} `{name}`", result.liquid)
+
+            for translation in source_liquid:
+                self._check_source_liquid_fields(translation, results, omni_dimensions, omni_measures, inherited)
+                cross_view_refs |= {t.token for t in translation.fields if not t.local}
+                report_builder.add_liquid_translation("derived table `sql`", translation)
+
+            omni_filters = self._convert_filter_fields(
+                view_name, filter_fields, scope['filter'], rule_applier, report_builder, issues, is_template
+            )
+            self._report_liquid(report_builder, issues, retargeted, omni_dimensions, omni_measures, inherited)
 
             if resolved_fields:
-                self._report_extends_conflicts(resolved_fields, omni_dimensions, omni_measures, report_builder)
+                self._report_extends_conflicts(resolved_fields, omni_dimensions, omni_measures, report_builder,
+                                               omni_filters)
 
             if cross_view_refs:
                 views = sorted({ref.split('.')[0] for ref in cross_view_refs})
@@ -474,6 +528,8 @@ class MigrationOrchestrator:
             if looker_view.file_comment:
                 view_kwargs['ai_context'] = looker_view.file_comment
             view_kwargs.update(view_source)
+            if omni_filters:
+                view_kwargs['filters'] = omni_filters
             if is_template:
                 view_kwargs['template'] = True
             else:
@@ -483,7 +539,8 @@ class MigrationOrchestrator:
 
             view = OmniView(**view_kwargs)
             print(f"      ✓ Schema: {schema or '(none, template view)'}")
-            print(f"      ✓ Dimensions: {len(omni_dimensions)}  Measures: {len(omni_measures)}")
+            print(f"      ✓ Dimensions: {len(omni_dimensions)}  Measures: {len(omni_measures)}"
+                  f"  Filter-only fields: {len(omni_filters)}")
 
             # ---------------- Step 5: render, validate, write ----------------
             print("\n[5/5] Generating files...")
@@ -593,19 +650,35 @@ class MigrationOrchestrator:
         )
 
     def _resolve_scope(self, csv_fields, kinds, looker_view, view_name, report_builder, issues,
-                       inherited: Optional[Dict[str, ExposedField]] = None) -> Dict[str, Set[str]]:
+                       inherited: Optional[Dict[str, ExposedField]] = None,
+                       filter_fields: Optional[Dict[str, Tuple[str, Dict]]] = None,
+                       inherited_filters: Optional[Dict[str, str]] = None) -> Dict[str, Set[str]]:
         """
         Map CSV rows to Looker fields; report rows that do not match
 
         A row naming a field the view inherits through `extends:` is not
         written here (the parent view carries it) and is reported apart.
+        Rows naming a parameter or a filter-only field (`filter_fields`, CSV
+        type `filter`) land under the `filter` key of the result.
         """
         scope: Dict[str, Set[str]] = {kind: set() for kind in kinds}
+        scope['filter'] = set()
+        filter_fields = filter_fields or {}
+        inherited_filters = inherited_filters or {}
         missing_rows = []
         inherited_rows: List[str] = []
         for row in csv_fields:
             name, csv_type = row.get('field'), row.get('field_type')
             actual = next((k for k, fields in kinds.items() if name in fields), None)
+            if actual is None and name in filter_fields:
+                if csv_type not in ('filter', 'parameter'):
+                    issues.append(f"CSV field '{name}' is listed as {csv_type} but is a {filter_fields[name][0]} in "
+                                  f"LookML; migrated as a filter-only field (CSV type `filter`)")
+                scope['filter'].add(name)
+                continue
+            if actual is None and name in inherited_filters:
+                inherited_rows.append(f"{name} (from `{inherited_filters[name]}`)")
+                continue
             if actual is None and inherited and name in inherited:
                 exposed = inherited[name]
                 inherited_rows.append(f"{name} (from `{exposed.origin}`)")
@@ -617,10 +690,6 @@ class MigrationOrchestrator:
                     report_builder.add_not_converted(
                         name, f"{MANUAL}: inherited from `{exposed.origin}`, where it is not migrated ({exposed.reason})"
                     )
-                continue
-            if actual is None and name in looker_view.parameters:
-                issues.append(f"CSV field '{name}' is a Looker parameter; parameters are not migrated")
-                report_builder.add_not_converted(name, f"{MANUAL}: Looker parameter - recreate as an Omni templated filter")
                 continue
             if actual is None:
                 missing_rows.append(f"{name} ({csv_type})")
@@ -723,7 +792,8 @@ class MigrationOrchestrator:
             canonical_mappings=self.config.canonical_mappings,
             column_fields=self._column_fields(looker_view, existing_fields),
             field_types=field_types,
-            type_resolver=self._resolve_cross_view_type
+            type_resolver=self._resolve_cross_view_type,
+            liquid_context=self._liquid_context(looker_view.view_name)
         )
         inherited_measures = {name for name, exposed in inherited.items() if exposed.kind == 'measure'}
         all_dimension_names = (set(looker_view.dimensions) | set(looker_view.dimension_groups)
@@ -777,7 +847,8 @@ class MigrationOrchestrator:
         resolution = self._view_resolution(view_name)
         inheritance = resolution if resolution is not None and not resolution.problem else None
         inherited = self._inherited_exposure(inheritance) if inheritance else {}
-        effective = effective_view(view, inheritance) if inheritance else view
+        retargeted = self._retargeted_fields(view, inheritance, inherited) if inheritance else set()
+        effective = effective_view(view, inheritance, also=retargeted) if inheritance else view
         _, results, blocked = self._convert_view_fields(effective, inherited, {}, phase=0, verified=True)
 
         types = self._field_types(effective)
@@ -860,17 +931,370 @@ class MigrationOrchestrator:
             return "the view is a template"
         return None
 
+    # ------------------------------------------------------------------
+    # Liquid, parameters and filter-only fields
+    # ------------------------------------------------------------------
+
+    def _liquid_context(self, view_name: str) -> LiquidContext:
+        """Resolver of the Liquid references found in the SQL of `view_name`"""
+        return LiquidContext(
+            field=lambda ref: self._resolve_liquid_ref(view_name, ref),
+            view=lambda name: self._resolve_liquid_view(name, view_name)
+        )
+
+    def _alias_targets(self) -> Dict[str, Set[str]]:
+        """
+        {name: views it stands for} across every explore under --looker-repo:
+        join aliases (`join: a { from: v }`) and explores named differently
+        from their base view
+        """
+        if self._alias_cache is None:
+            definitions, _ = self._load_explores()
+            aliases: Dict[str, Set[str]] = {}
+            for explores in definitions.values():
+                for explore in explores:
+                    merged = explore
+                    if explore.extends:
+                        resolved = resolve_explore_extends(explore, definitions)
+                        if not resolved.problem:
+                            merged = resolved.explore
+                    if merged.base_view != explore.name:
+                        aliases.setdefault(explore.name, set()).add(merged.base_view)
+                    for join in merged.joins:
+                        if join.source_view != join.view:
+                            aliases.setdefault(join.view, set()).add(join.source_view)
+            self._alias_cache = aliases
+        return self._alias_cache
+
+    def _resolve_liquid_view(self, name: str, current_view: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        The view a name used in Liquid points to, as (Omni view name, None)
+        or (None, reason)
+
+        The name is the view being converted, a view defined under
+        --looker-repo, or an alias that stands for exactly one view across
+        all explores. Anything else is not resolved.
+        """
+        if name == current_view:
+            return current_view, None
+        if len(self._load_views()[0].get(name, [])) == 1:
+            return name, None
+        targets = sorted(self._alias_targets().get(name, ()))
+        if len(targets) == 1:
+            if len(self._load_views()[0].get(targets[0], [])) == 1:
+                return targets[0], None
+            return None, f"`{name}` is an alias of `{targets[0]}`, which is not a single view under --looker-repo"
+        if targets:
+            return None, (f"`{name}` is an alias of several views ({', '.join(targets)}), so the view it "
+                          f"names here is not known")
+        return None, f"`{name}` is not a view under --looker-repo nor a join alias of an explore"
+
+    def _resolve_liquid_ref(self, current_view: str, ref: str,
+                            typed: bool = True) -> Tuple[Optional[LiquidField], Optional[str]]:
+        """
+        The field a Liquid reference (`field` or `view.field`) names in the
+        SQL of `current_view`, as the tool writes it in Omni
+
+        An unqualified name is a field the view defines or inherits; the
+        token then names the view itself. A dimension group timeframe
+        (`created_date`) names the group's Omni dimension (`created`).
+        With `typed=False` the Omni type of a filter-only field is not
+        worked out (used while collecting how parameters are used).
+        """
+        view_ref, _, field_name = ref.rpartition('.')
+        target_view = current_view
+        if view_ref:
+            target_view, reason = self._resolve_liquid_view(view_ref, current_view)
+            if target_view is None:
+                return None, reason
+        full = self._full_view(target_view)
+        if full is None:
+            return None, f"view `{target_view}` was not found under --looker-repo"
+        local = target_view == current_view
+
+        for kind, fields in (('parameter', full.parameters), ('filter', full.filters)):
+            if field_name not in fields:
+                continue
+            data = fields[field_name]
+            origin = self._filter_origin(target_view, field_name)
+            target = LiquidField(view=target_view, name=field_name, kind=kind,
+                                 looker_type=data.get('type') or 'string', origin=origin, local=local)
+            if kind == 'filter' and data.get('sql'):
+                return None, f"filter-only field `{ref}` is not migrated (it has `sql:`)"
+            if target.looker_type != 'unquoted' and target.looker_type not in FILTER_TYPE_MAP:
+                return None, f"{kind} `{ref}` is not migrated (type `{target.looker_type}`)"
+            if typed:
+                target.omni_type, target.problem = self._filter_omni_type(origin, field_name, target.looker_type)
+            return target, None
+
+        if field_name in full.dimensions:
+            return LiquidField(view=target_view, name=field_name, kind='dimension', origin=target_view, local=local,
+                               looker_type=full.dimensions[field_name].get('type', 'string')), None
+        if field_name in full.measures:
+            return LiquidField(view=target_view, name=field_name, kind='measure', origin=target_view, local=local,
+                               looker_type='measure'), None
+        for group, data in full.dimension_groups.items():
+            if not field_name.startswith(f"{group}_") or data.get('type', 'time') != 'time':
+                continue
+            timeframe = field_name[len(group) + 1:]
+            if data.get('timeframes') and timeframe not in data['timeframes']:
+                continue
+            if timeframe not in DATE_FILTER_TIMEFRAMES:
+                return None, (f"`{ref}` is the `{timeframe}` timeframe of dimension group `{group}`; only the "
+                              f"{', '.join(DATE_FILTER_TIMEFRAMES)} timeframes map to the Omni dimension")
+            return LiquidField(view=target_view, name=group, kind='dimension_group', origin=target_view, local=local,
+                               looker_type='time', timeframe=timeframe), None
+        return None, f"`{ref}` is not a field of view `{target_view}`"
+
+    def _filter_origin(self, view_name: str, field_name: str) -> str:
+        """The view whose migration writes a parameter or filter-only field `view_name` has"""
+        declared = self._cached_view(view_name)
+        resolution = self._view_resolution(view_name)
+        if declared is None or field_name in own_filter_fields(declared):
+            return view_name
+        if resolution is None or resolution.problem or field_name not in resolution.fields:
+            return view_name
+        inherited = resolution.fields[field_name]
+        # Parents that disagree: the view writes the definition Looker uses itself
+        return view_name if inherited.conflict else inherited.origin
+
+    def _filter_omni_type(self, origin: str, field_name: str, looker_type: str) -> Tuple[str, Optional[str]]:
+        """
+        Omni `type` of a parameter or filter-only field, and why its value
+        cannot be injected (None when it can)
+
+        A `type: unquoted` parameter becomes `column` when the SQL of the
+        repository uses it as a whole identifier, and `string` when it is
+        used wrapped in single quotes (or not used in SQL at all). Used both
+        ways, no single type fits.
+        """
+        if looker_type != 'unquoted':
+            return FILTER_TYPE_MAP[looker_type], None
+        forms = {form for _, form in self._liquid_usage().get((origin, field_name), [])}
+        if {'identifier', 'literal'} <= forms:
+            return 'string', ("the `type: unquoted` parameter is used both as an identifier and as a quoted "
+                              "string, and an Omni filter-only field has one type")
+        return ('column' if 'identifier' in forms else 'string'), None
+
+    @staticmethod
+    def _sql_blocks(view: LookerView) -> List[str]:
+        """Every SQL block of a view that Liquid is translated in"""
+        blocks = [(view.derived_table or {}).get('sql')]
+        for fields in (view.dimensions, view.dimension_groups, view.measures):
+            blocks.extend(data.get('sql') for data in fields.values())
+        return [sql for sql in blocks if isinstance(sql, str)]
+
+    def _liquid_usage(self) -> Dict[Tuple[str, str], List[Tuple[str, Optional[str]]]]:
+        """
+        Where the SQL of the repository names each parameter and filter-only
+        field in a Liquid tag that can be translated:
+        {(view that writes the field, field): [(view using it, form)]}
+
+        `form` says how a `type: unquoted` parameter is used at that place:
+        'identifier', 'literal' or None (see `unquoted_use_form`). Every view
+        is read with the fields it inherits. Computed once per run.
+        """
+        if self._liquid_usage_cache is None:
+            usage: Dict[Tuple[str, str], List[Tuple[str, Optional[str]]]] = {}
+            for name in sorted(self._load_views()[0]):
+                view = self._full_view(name)
+                if view is None:
+                    continue
+                for sql in self._sql_blocks(view):
+                    if not has_liquid(sql):
+                        continue
+                    for item in scan_liquid(sql)[0]:
+                        if item.kind in ('other', 'endcondition', 'user_attribute') or not item.ref:
+                            continue
+                        target, _ = self._resolve_liquid_ref(name, item.ref, typed=False)
+                        if target is None or target.kind not in FILTER_KINDS:
+                            continue
+                        form = None
+                        if target.looker_type == 'unquoted' and item.kind in ('parameter', 'parameter_value'):
+                            form, _ = unquoted_use_form(sql, item)
+                        usage.setdefault((target.origin, target.name), []).append((name, form))
+            self._liquid_usage_cache = usage
+        return self._liquid_usage_cache
+
+    def _retargeted_fields(
+        self,
+        declared_view: LookerView,
+        resolution: ViewExtendsResolution,
+        inherited: Dict[str, ExposedField]
+    ) -> Set[str]:
+        """
+        Inherited fields the view has to write itself because their sql
+        holds Liquid that names "this view" (an unqualified reference)
+
+        A Mustache token names one view. The parent's field names the
+        parent, so the copy a child inherits would read the parent's filter,
+        not the child's. Writing the field into the child, converted there,
+        keeps the Looker meaning.
+        """
+        own = own_fields(declared_view)
+        names: Set[str] = set()
+        for name, field_data in resolution.fields.items():
+            if name in own or field_data.conflict or field_data.kind in FILTER_KINDS:
+                continue
+            exposed = inherited.get(name)
+            if exposed is None or exposed.reason is not None:
+                continue  # the parent does not write it: nothing is inherited
+            sql = field_data.data.get('sql')
+            if not isinstance(sql, str) or not has_liquid(sql):
+                continue
+            if any(item.ref and item.kind != 'user_attribute' and '.' not in item.ref
+                   for item in scan_liquid(sql)[0]):
+                names.add(name)
+        return names
+
+    @staticmethod
+    def _check_source_liquid_fields(
+        translation: LiquidTranslation,
+        results: Dict[str, Tuple[str, ConversionResult]],
+        omni_dimensions: Dict[str, OmniDimension],
+        omni_measures: Dict[str, OmniMeasure],
+        inherited: Dict[str, ExposedField]
+    ):
+        """
+        A derived table whose SQL names a dimension or measure of its own
+        view in a Mustache token needs that field in the Omni view
+
+        Raises:
+            ValueError: a field it names is not written
+        """
+        for target in translation.fields:
+            if target.kind in FILTER_KINDS or not target.local:
+                continue
+            name = target.name
+            if name in omni_dimensions or name in omni_measures:
+                continue
+            exposed = inherited.get(name)
+            if name not in results and exposed is not None and exposed.reason is None:
+                continue
+            raise ValueError(
+                f"{MANUAL}: the derived table SQL names field `{name}` in a Liquid tag, and that field is not "
+                f"migrated, so the Mustache token would point at nothing. Migrate this view manually"
+            )
+
+    def _convert_filter_fields(
+        self,
+        view_name: str,
+        filter_fields: Dict[str, Tuple[str, Dict]],
+        in_scope: Set[str],
+        rule_applier: RuleApplier,
+        report_builder: ConversionReportBuilder,
+        issues: List[str],
+        is_template: bool = False
+    ) -> Dict[str, OmniFilter]:
+        """
+        Convert the view's parameters and filter-only fields to Omni
+        filter-only fields (the view's `filters:` key)
+
+        Every one is written. It is visible when the CSV lists it (type
+        `filter`) or a Liquid tag in the repository's SQL names it, and
+        `hidden: true` otherwise.
+        """
+        omni_filters: Dict[str, OmniFilter] = {}
+        lines: List[str] = []
+        for name, (kind, data) in filter_fields.items():
+            looker_type = data.get('type') or 'string'
+            omni_type, problem = (self._filter_omni_type(view_name, name, looker_type)
+                                  if looker_type == 'unquoted' else (None, None))
+            result = rule_applier.convert_filter_field(name, data, kind, omni_type)
+            users = sorted({user for user, _ in self._liquid_usage().get((view_name, name), [])})
+            if not result.omni_field:
+                reason = '; '.join(result.warnings)
+                print(f"      ✗ NOT CONVERTED: {name} ({kind})")
+                issues.append(f"{name}: {reason}")
+                report_builder.add_not_converted(name, reason)
+                continue
+            if name in in_scope:
+                visibility = "visible (in the CSV scope)"
+            elif users:
+                visibility = f"visible (named in the SQL of {', '.join(f'`{user}`' for user in users)})"
+            else:
+                result.omni_field.hidden = True
+                visibility = "hidden (not in the CSV scope and no SQL names it)"
+            suggest_from = result.omni_field.suggest_from_field or ''
+            if is_template and suggest_from.startswith(f"{view_name}."):
+                # A template has no rows: its own fields cannot supply suggestions
+                result.omni_field.suggest_from_field = None
+                result.warnings.append(
+                    f"suggest_dimension `{suggest_from}` not carried: a template view cannot supply suggestions. "
+                    f"Set `suggest_from_field` on the views that extend it"
+                )
+            omni_filters[name] = result.omni_field
+            print(f"      ✓ {kind}: {name}")
+            line = f"  {name} (Looker {kind}, type {looker_type} → `type: {result.omni_field.type}`): {visibility}"
+            notes = list(result.warnings) + ([f"{MANUAL}: {problem}"] if problem else [])
+            if looker_type == 'unquoted' and not problem:
+                notes.append(
+                    "`type: column` quotes the value as an identifier: each allowed value must be a full column "
+                    "or `schema.table` name" if result.omni_field.type == 'column' else
+                    "`type: unquoted` parameter written as `type: string`: Omni renders the value as a quoted "
+                    "string and cannot inject raw SQL"
+                )
+            if notes:
+                line += ". " + '. '.join(notes)
+                issues.extend(f"{name}: {note}" for note in notes)
+            lines.append(line)
+        if lines:
+            report_builder.add_advanced_feature(
+                feature="Parameters and Filter-Only Fields",
+                status="CONVERTED, REVIEW",
+                details="Looker `parameter:` and `filter:` written as Omni filter-only fields (the view's "
+                        "`filters:` key):\n" + '\n'.join(lines),
+                action_required="Check each one in Omni. A parameter is single select "
+                                "(`filter_single_select_only: true`). To show a hidden one, list it in the CSV "
+                                "with type `filter`."
+            )
+        return omni_filters
+
+    @staticmethod
+    def _report_liquid(
+        report_builder: ConversionReportBuilder,
+        issues: List[str],
+        retargeted: Set[str],
+        omni_dimensions: Dict[str, OmniDimension],
+        omni_measures: Dict[str, OmniMeasure],
+        inherited: Dict[str, ExposedField]
+    ):
+        """Report what the Liquid translation needs from a human"""
+        attributes = report_builder.liquid_attributes()
+        if attributes:
+            issues.append("User attributes used in translated SQL; create them in Omni: " + ', '.join(attributes))
+            report_builder.add_advanced_feature(
+                feature="User Attributes (translated)",
+                status=f"CARRIED - {MANUAL}",
+                details="Translated SQL reads these user attributes through `{{ omni_attributes.name }}`: "
+                        + ', '.join(f"`{name}`" for name in attributes),
+                action_required="Create each user attribute in Omni under the same name before deploying."
+            )
+        written = sorted(name for name in retargeted if name in omni_dimensions or name in omni_measures)
+        if written:
+            report_builder.add_advanced_feature(
+                feature="Templated Fields Rewritten From extends",
+                status="CONVERTED, REVIEW",
+                details="These inherited fields use Liquid that names the view itself. A Mustache token names one "
+                        "view, so they were written into this view with tokens that name it, tagged "
+                        f"`{RESOLVED_FROM_EXTENDS_TAG}`: "
+                        + ', '.join(f"{name} (from `{inherited[name].origin}`)" for name in written),
+                action_required="Check each field against Looker. A field is visible when the CSV lists it under "
+                                "this view or under the view it comes from, and hidden otherwise."
+            )
+
     @staticmethod
     def _report_extends_conflicts(
         resolved_fields: Dict[str, Any],
         omni_dimensions: Dict[str, OmniDimension],
         omni_measures: Dict[str, OmniMeasure],
-        report_builder: ConversionReportBuilder
+        report_builder: ConversionReportBuilder,
+        omni_filters: Optional[Dict[str, OmniFilter]] = None
     ):
         """Report the fields two parents define differently and what was written for them"""
         lines = []
         for name, inherited in sorted(resolved_fields.items()):
-            written = name in omni_dimensions or name in omni_measures
+            written = name in omni_dimensions or name in omni_measures or name in (omni_filters or {})
             parents = ', '.join(f"`{parent}`" for parent in inherited.conflict)
             lines.append(
                 f"  {name} ({inherited.kind}): defined differently by {parents}. Looker uses the last "
@@ -1126,8 +1550,11 @@ class MigrationOrchestrator:
             report_builder.add_advanced_feature(
                 feature="User Attributes (Liquid Templates)",
                 status=MANUAL,
-                details="View uses _user_attributes in Liquid templates",
-                action_required="Rewrite the logic with Omni user attributes; fields using Liquid were not converted."
+                details="View uses _user_attributes in Liquid templates. `{{ _user_attributes['x'] }}` used as a "
+                        "value in sql is translated to `{{ omni_attributes.x }}` (see Liquid translated); any other "
+                        "use (for example inside `{% if %}`) is not converted.",
+                action_required="Create each user attribute in Omni under the same name, and rewrite by hand the "
+                                "logic of the fields that were not converted."
             )
         if looker_view.required_access_grants:
             issues.append(f"View-level required_access_grants not carried: {', '.join(looker_view.required_access_grants)}")
@@ -1136,15 +1563,6 @@ class MigrationOrchestrator:
                 status=MANUAL,
                 details=f"View requires access grants:\n{self._format_grant_details(looker_view.required_access_grants)}",
                 action_required="Define the grants in the Omni model and add required_access_grants to the view or the topics that use it."
-            )
-        if looker_view.parameters:
-            names = ', '.join(sorted(looker_view.parameters))
-            issues.append(f"Parameters not migrated: {names}")
-            report_builder.add_advanced_feature(
-                feature="Parameters",
-                status=MANUAL,
-                details=f"Looker parameter(s) not migrated: {names}",
-                action_required="Recreate as Omni templated filters if still needed."
             )
         if looker_view.drill_fields or looker_view.sets:
             report_builder.add_not_converted(
@@ -2039,13 +2457,19 @@ class MigrationOrchestrator:
         looker_view: LookerView,
         report_builder: ConversionReportBuilder,
         issues: List[str],
-        inherited_source: Optional[ViewSource] = None
+        inherited_source: Optional[ViewSource] = None,
+        translations: Optional[List[LiquidTranslation]] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Build the view source: {'table_name'[, 'catalog']}, {'sql'} or {'query'}
 
         A view that declares no source of its own uses the one it inherits
         through `extends:` (`inherited_source`), written out explicitly.
+
+        Liquid in a derived table's SQL is translated to Omni Mustache when
+        every construct in it has an exact equivalent; the translation is
+        appended to `translations` so the caller can report it and check the
+        fields it names.
 
         Returns:
             (schema, source_dict)
@@ -2083,16 +2507,27 @@ class MigrationOrchestrator:
                 raw_sql = derived['sql']
                 print(f"      ℹ️  SQL derived table detected ({len(raw_sql)} chars)")
                 sql = self._clean_sql_for_omni(raw_sql)
-                schema = self._extract_schema_from_sql(sql)
-                if has_liquid(sql) or re.search(r'\$\{[^}]+\}', sql):
+                if re.search(r'\$\{[^}]+\}', sql):
                     raise ValueError(
-                        f"{MANUAL}: the derived table SQL contains Liquid or ${{...}} references "
+                        f"{MANUAL}: the derived table SQL contains ${{...}} references "
                         f"(e.g. ${{other_view.SQL_TABLE_NAME}}); migrate this view manually"
                     )
+                templated = ""
+                if has_liquid(sql):
+                    translation = translate_liquid(sql, self._liquid_context(looker_view.view_name))
+                    if translation.sql is None:
+                        raise ValueError(
+                            f"{MANUAL}: the derived table {translation.reason}. Migrate this view manually"
+                        )
+                    sql = translation.sql
+                    if translations is not None:
+                        translations.append(translation)
+                    templated = " Liquid was translated to Omni Mustache (see Liquid translated)."
+                schema = self._extract_schema_from_sql(sql)
                 report_builder.add_advanced_feature(
                     feature="SQL Derived Table",
                     status="CONVERTED",
-                    details="Converted to an Omni query view with a top-level sql: block.",
+                    details="Converted to an Omni query view with a top-level sql: block." + templated,
                     action_required="Review the SQL and table references."
                 )
                 return schema, {'sql': sql}

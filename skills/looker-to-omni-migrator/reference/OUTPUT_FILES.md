@@ -84,6 +84,12 @@ Notes:
 
 `{view}.query.view` with either `sql:` (SQL derived table) or `query:` (native derived table). See [../docs/QUERY_VIEWS.md](../docs/QUERY_VIEWS.md).
 
+### Filter-only fields and templated SQL
+
+- A view with a Looker `filter:` or `parameter:` gets a top-level `filters:` key after `dimensions:` and `measures:`, one entry per filter-only field.
+- SQL that holds Omni Mustache (translated Liquid) is always written as a block scalar (`sql: |-`), for a field as well as for a derived table, and is not reformatted.
+- The report gains a "Liquid translated" section (each Liquid construct and the Mustache written for it, per SQL block) and, under Advanced Features, "Parameters and Filter-Only Fields" (type and visibility of each), "User Attributes (translated)" and "Templated Fields Rewritten From extends" when they apply.
+
 ## 2. Migration report (`{view}.migration.md`)
 
 Real report for the run above (location shortened):
@@ -230,7 +236,7 @@ The source files, then a table of every grant with its user attribute, allowed v
 
 - Blank line between fields; tags written inline (`tags: [mig_phase_0, verified]`).
 - When a merge puts a Looker field under an existing field of another name, that field also gets the tag `from_looker__<looker field>` (for example `from_looker__customer_email` on `email`). Keep it: later runs use it to find the Looker field and apply its access grants.
-- SQL for derived tables is formatted with `sqlparse` and written as a `|-` block.
+- SQL for derived tables is formatted with `sqlparse` and written as a `|-` block. SQL that holds Mustache keeps the lines of the LookML.
 - When merging, unknown top-level keys in the existing view are kept.
 - Every view is validated against the tool's Pydantic models before it is written. This is not a check against a live Omni instance.
 
