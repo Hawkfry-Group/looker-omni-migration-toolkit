@@ -163,14 +163,23 @@ class TestExploreSemantics:
         by_to = {(r["join_to_view"], r.get("join_to_view_as")): r for r in rels}
         assert by_to[("brands", None)]["join_from_view"] == "products"
 
-    def test_aliased_parent_keeps_source_view(self, tmp_path, explore_repo):
+    def test_aliased_parent_is_joined_by_its_alias(self, tmp_path, explore_repo):
         _, topic, rels, _ = self.migrate(tmp_path, explore_repo)
+        buyer = next(r for r in rels if r["join_to_view"] == "buyer")
+        region = next(r for r in rels if r["join_to_view"] == "buyer_region")
+        assert "join_to_view_as" not in buyer and topic["views"]["buyer"]["extends"] == ["users"]
+        assert region["join_from_view"] == "buyer" and "join_from_view_as" not in region
+        assert topic["joins"]["buyer"] == {"buyer_region": {}}
+
+    def test_aliased_parent_keeps_source_view_in_a_relationships_file(self, tmp_path, explore_repo):
+        # A relationships file is model-wide, so the alias cannot be a view of the topic
+        _, topic, rels, _ = self.migrate(tmp_path, explore_repo, relationships_file=True)
         buyer = next(r for r in rels if r.get("join_to_view_as") == "buyer")
         region = next(r for r in rels if r["join_to_view"] == "buyer_region")
         assert buyer["join_to_view"] == "users"
         assert region["join_from_view"] == "users"
         assert region["join_from_view_as"] == "buyer"
-        assert topic["joins"]["buyer"] == {"buyer_region": {}}
+        assert "buyer" not in topic.get("views", {})
 
     def test_canonical_join_types(self, tmp_path, explore_repo):
         _, _, rels, _ = self.migrate(tmp_path, explore_repo)

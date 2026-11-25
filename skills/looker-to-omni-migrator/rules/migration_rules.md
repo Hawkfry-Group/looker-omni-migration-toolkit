@@ -363,7 +363,7 @@ The report's **Merge/Enrich Summary** lists counts for: Updated (in scope), Merg
 - Each explore becomes `{explore}.topic.yaml` with `fields: [all_views.*, "-tag:table_key"]` (plus the explore's field restrictions, see below), `base_view` (the name the explore's own fields go by, see Aliases below), and `joins` nested by which view each join's `sql_on` references.
 - The join definitions are written inside the topic file under a top-level `relationships:` key (topic-scoped relationships), so they apply to that topic only. `joins:` is still written and keeps its nesting. With `--relationships-file` they go to `{explore}.relationships` instead (a plain YAML list, written only when at least one join converts), and a join between the same two views that differs from another `.relationships` file in the output directory is reported as a conflict. Both forms write the same keys.
 - Join types: `left_outer` (or none) → `always_left`; `inner` → `inner`; `full_outer` → `full_outer`; `cross` → `cross`. Missing `relationship` defaults to `many_to_one`. Other join types or relationships: join not migrated.
-- Aliased joins (`from:`) use `join_to_view` plus `join_to_view_as`; joins from an aliased view use `join_from_view_as`. `on_sql` keeps the Looker aliases.
+- Aliased joins (`from:`) are declared in the topic's `views:` block as an extended view and joined by the alias (see Aliases below). `on_sql` keeps the Looker aliases. With `--relationships-file`, or when the alias has the name of another view, they use `join_to_view` plus `join_to_view_as` (and `join_from_view_as` for a join from an aliased view).
 - Not migrated, reported with the original SQL: joins with Liquid, `foreign_key`, raw `sql`, references outside the explore, more than one parent, cycles, or that depend on a skipped join.
 - Carried into the topic: `access_filter` → `access_filters`, `sql_always_where` → `always_where_sql`, `sql_always_having` → `always_having_sql`, `required_access_grants`, `hidden`, `group_label`, and explore and join `fields:` restrictions (see Field restrictions).
 - Reported only: `conditionally_filter` (Omni has no equivalent), `always_join`, `required_joins`, join-level `required_access_grants`.
@@ -424,7 +424,7 @@ Only these expressions are translated:
 
 Looker projects reuse short names (`orders`, `session`) for different views in different explores. The migrator keeps every alias and declares it inside the topic, so it never becomes a model-wide name: two topics can use the same alias for different views.
 
-- **Join alias.** `join: shop { from: stores }` becomes `join_to_view: stores` with `join_to_view_as: shop` in the topic's `relationships:`.
+- **Join alias.** `join: shop { from: stores }` is declared in the topic's `views:` block as `shop: { extends: [stores] }` and joined with `join_to_view: shop`. This is the pattern Omni documents for a topic-scoped alias. `join_to_view_as` is not used for it: Omni reads every entry under `views:` as a view, so an alias written that way clashes with its own label or fields there, and filters do not bind to it. Two exceptions keep `join_to_view_as`: `--relationships-file` (a relationships file is model-wide), and an alias that has the name of another view under `--looker-repo` (reported, and its `view_label` is not carried).
 - **Base alias.** The explore's own fields go by `view_name:` when set, else by the explore name. The real view is `from:` when set, else `view_name:`, else the explore name. When the two differ (`explore: sales { from: sales_fact }`, or `from:` together with `view_name:`), the topic gets `base_view: <alias>` and declares the alias in its `views:` block:
 
 ```yaml
@@ -432,15 +432,17 @@ base_view: sales
 views:
   sales:
     extends: [sales_fact]
+  shop:
+    extends: [stores]
 relationships:
 - join_from_view: sales
-  join_to_view: stores
-  join_to_view_as: shop
+  join_to_view: shop
   on_sql: ${sales.store_key} = ${shop.store_key}
 joins:
   shop: {}
 ```
 
+- **Liquid keeps the alias.** A `{% condition %}`, `{% parameter %}` or date bound that names another view through an alias (`{% condition shop.opened_date %}`) keeps the alias in the token (`{{# shop.opened.filter }}`). Omni fills a token in from a filter on the name the view goes by in the topic, so a token naming the real view would never bind and a derived table would scan everything. The token resolves in every topic that declares the alias; on the view file Omni model validation warns `No such field`, which is expected. An alias that stands for several views is accepted when each of them defines the field the same way, and stops the conversion otherwise. An alias that only ever stands for the view being converted is written as the view's own name.
 - **Filters and restrictions keep the alias.** `always_filter`, `access_filter`, `sql_always_where` and `sql_always_having` name fields through the alias (`sales.sold_date`), and the field type is read from the real view. The `default_filters` key keeps the alias (`sales.sold`).
 - **Verification replaces the blanket warning.** Every `${alias.field}` in the join conditions, `access_filters`, `always_where_sql` and `always_having_sql` is checked against the view the alias stands for (own fields, inherited fields, dimension group timeframes). Only the references that do not resolve are reported ("Unresolved field references"). An alias whose view is not a single view under `--looker-repo` is reported as not verified.
 - **View labels.** A Looker `view_label` on the explore or a join becomes `label:` for that name in the topic's `views:` block when it differs from the view's own label.
