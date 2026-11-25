@@ -463,7 +463,8 @@ With that config, a field labelled "SKU Code" is labelled "Product Code". A fiel
 | `type: left_outer` or no type | `join_type: always_left` |
 | `type: inner` / `full_outer` / `cross` | `inner` / `full_outer` / `cross` |
 | no `relationship` | `relationship_type: many_to_one` |
-| `join: visitor { from: users }` | `join_to_view: users`, `join_to_view_as: visitor` (scoped to the topic) |
+| `join: visitor { from: users }` | `views: { visitor: { extends: [users] } }` and `join_to_view: visitor` (scoped to the topic) |
+| `{% condition visitor.created_date %}` in another view's SQL | `{{# visitor.created.filter }}`: the alias is kept, so the filter binds in the topic |
 | `explore: sales { from: sales_fact }` | `base_view: sales` and `views: { sales: { extends: [sales_fact] } }` |
 | `view_label: "Shop"` on the explore or a join | `views: { <name>: { label: Shop } }` when it differs from the view's label |
 | `${orders.created_date}` in `sql_on` | `${orders.created[date]}` |

@@ -356,7 +356,7 @@ class TestTopicScopedRelationships:
         assert "orders.relationships" not in report
         assert "topic-scoped" in report
 
-    def test_alias_keys_kept(self, tmp_path):
+    def test_aliases_are_extended_views_of_the_topic(self, tmp_path):
         repo = make_repo(tmp_path, """
             explore: orders {
               join: buyer {
@@ -372,8 +372,9 @@ class TestTopicScopedRelationships:
         """)
         _, topic, _ = migrate(tmp_path, repo)
         buyer, products = topic["relationships"]
-        assert buyer["join_to_view"] == "users" and buyer["join_to_view_as"] == "buyer"
-        assert products["join_from_view"] == "users" and products["join_from_view_as"] == "buyer"
+        assert buyer["join_to_view"] == "buyer" and "join_to_view_as" not in buyer
+        assert products["join_from_view"] == "buyer" and "join_from_view_as" not in products
+        assert topic["views"]["buyer"] == {"extends": ["users"]}
         assert topic["joins"] == {"buyer": {"products": {}}}
 
     def test_no_joins_no_relationships_key(self, tmp_path):

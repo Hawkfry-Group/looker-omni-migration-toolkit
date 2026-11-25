@@ -109,7 +109,7 @@ Re-running the same view for a later phase merges into the earlier output: phase
 | view `extends: [a, b]` | view `extends: [a, b]`; a field the parents define differently is written into the child (Looker: last parent wins, Omni: first) and tagged `resolved_from_extends` |
 | view `extension: required`, or a view with no table that is only extended | view `template: true`, without `schema` and `table_name` |
 | explore `join` | topic join plus an entry under the topic's `relationships:` |
-| `join: shop { from: stores }` | `join_to_view: stores` with `join_to_view_as: shop`, scoped to the topic |
+| `join: shop { from: stores }` | `views: { shop: { extends: [stores] } }` and `join_to_view: shop`, scoped to the topic |
 | explore `from:` / `view_name:` that rename the base view | `base_view: <alias>`, declared in the topic's `views:` block with `extends: [real_view]` |
 | explore or join `view_label` | `label` for that view in the topic's `views:` block |
 | field whose SQL names a join alias (`${shop.store_name}`) | left out of the view file; written in the `views:` block of each topic that has the alias |

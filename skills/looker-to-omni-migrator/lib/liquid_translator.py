@@ -124,6 +124,7 @@ class LiquidField:
     omni_type: Optional[str] = None  # filter-only fields: the Omni `type` the tool writes
     problem: Optional[str] = None  # why its value cannot be injected (e.g. used in two incompatible ways)
     timeframe: Optional[str] = None  # set when the reference named a dimension group timeframe
+    alias: bool = False  # `view` is a join alias kept from Looker: it only exists in a topic that declares it
 
     @property
     def token(self) -> str:

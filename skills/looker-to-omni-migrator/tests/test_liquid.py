@@ -927,17 +927,43 @@ class TestViewNameResolution:
     def test_alias_that_maps_to_one_view(self, tmp_path):
         result = self.run(tmp_path, "customers.signup_date")
         assert result.success, result.error_message
-        assert "{{# users.signup_date.filter }}" in load_yaml(result.view_file_path)["sql"]
+        # The token keeps the alias: naming the real view leaves the filter unbound in Omni
+        assert "{{# customers.signup_date.filter }}" in load_yaml(result.view_file_path)["sql"]
+        assert "customers.signup_date" in result.report_file_path.read_text().split("Cross-View References")[1]
 
     def test_explore_name_with_another_base_view(self, tmp_path):
         result = self.run(tmp_path, "people.signup_date", "explore: people { from: users }")
-        assert "{{# users.signup_date.filter }}" in load_yaml(result.view_file_path)["sql"]
+        assert "{{# people.signup_date.filter }}" in load_yaml(result.view_file_path)["sql"]
 
-    def test_alias_that_maps_to_two_views_is_not_converted(self, tmp_path):
+    def test_alias_of_the_view_itself_names_the_view(self, tmp_path):
+        result = self.run(tmp_path, "window.id", "explore: window { from: facts }")
+        assert result.success, result.error_message
+        assert "{{# facts.id.filter }}" in load_yaml(result.view_file_path)["sql"]
+
+    def test_alias_that_maps_to_two_views_with_the_same_field_is_kept(self, tmp_path):
         extra = "explore: more { join: customers { from: accounts sql_on: ${more.id} = ${customers.id} ;; } }"
         result = self.run(tmp_path, "customers.signup_date", extra)
+        assert result.success, result.error_message
+        assert "{{# customers.signup_date.filter }}" in load_yaml(result.view_file_path)["sql"]
+
+    def test_alias_that_maps_to_two_views_that_differ_is_not_converted(self, tmp_path):
+        extra = """
+            view: ledgers { sql_table_name: shop.ledgers ;; dimension: signup_date { type: string } dimension: id {} }
+            explore: more { join: customers { from: ledgers sql_on: ${more.id} = ${customers.id} ;; } }
+        """
+        result = self.run(tmp_path, "customers.signup_date", extra)
         assert not result.success
-        assert "`customers` is an alias of several views (accounts, users)" in result.error_message
+        assert "`customers` is an alias of several views (ledgers, users)" in result.error_message
+        assert "differently" in result.error_message
+
+    def test_alias_that_maps_to_two_views_one_without_the_field_is_not_converted(self, tmp_path):
+        extra = """
+            view: ledgers { sql_table_name: shop.ledgers ;; dimension: id {} }
+            explore: more { join: customers { from: ledgers sql_on: ${more.id} = ${customers.id} ;; } }
+        """
+        result = self.run(tmp_path, "customers.signup_date", extra)
+        assert not result.success
+        assert "`customers` is an alias of several views (ledgers, users)" in result.error_message
 
     def test_unknown_name_is_not_converted(self, tmp_path):
         result = self.run(tmp_path, "nobody.signup_date")

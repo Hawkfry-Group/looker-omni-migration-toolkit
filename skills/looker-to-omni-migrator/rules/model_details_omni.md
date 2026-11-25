@@ -263,15 +263,18 @@ views:
     dimensions:
       store_label:
         sql: ${shop.store_name}
+  shop:
+    extends: [stores]
 relationships:
 - join_from_view: sales
-  join_to_view: stores
-  join_to_view_as: shop
+  join_to_view: shop
   on_sql: ${sales.store_key} = ${shop.store_key}
 joins:
   shop: {}
 ```
 
+- An alias is a view of the topic: an entry under `views:` with `extends: [real_view]`, joined by its own name. Every entry under `views:` is a view, so an alias written with `join_to_view_as` clashes with an entry of the same name ("Relationship alias duplicates view name"), and an entry with no `extends` has no table.
+- A filter token (`{{# view.field.filter }}`) is filled in from a filter on the name the view goes by in the topic. A token that names the real view behind an alias reads as no filter, and the SQL runs unfiltered.
 - Topic names must be unique in a model: topic files are not namespaced by folder.
 - `relationships` (topic-scoped join definitions, same keys as section 9) applies to this topic only. `joins` is still required: it declares which views are in the topic and how they nest.
 - `default_filters` is keyed by `view.field`. An entry with `required: true` beside its operator can be changed by users but not removed, and must have a value:
@@ -308,7 +311,7 @@ Join definitions are a plain YAML list. The migrator writes them inside the topi
 
 - `join_type`: `always_left`, `inner`, `full_outer`, `cross`.
 - `relationship_type`: `many_to_one`, `one_to_many`, `one_to_one`, `many_to_many`.
-- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once. An alias declared in a topic's own `relationships:` is scoped to that topic: two topics can use the same alias for different views.
+- `join_to_view_as` / `join_from_view_as` give an alias for a view joined more than once. The migrator writes them only in a relationships file, or when the alias has the name of another view. Inside a topic it declares the alias as an extended view instead (section 8): the alias can then carry a label and fields, and filters bind to it. Either way the alias is scoped to its topic: two topics can use the same alias for different views.
 - Relationships in a relationships file apply to the whole model, not one topic: define each pair once. Relationships under a topic's `relationships:` key apply to that topic only.
 
 ## 10. Tags

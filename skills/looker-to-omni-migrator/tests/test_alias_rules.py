@@ -260,7 +260,8 @@ class TestSharedAliasMap:
         result = self.orchestrator(tmp_path, model).migrate_view("sales_window", 0, "Team A")
         assert result.success, result.error_message
         view = load_yaml(result.view_file_path)
-        assert "{{# sales_fact.sold.filter }} sold_at {{/ sales_fact.sold.filter }}" in view["sql"]
+        # The alias is kept: Omni binds a filter to the name the view goes by in the topic
+        assert "{{# orders.sold.filter }} sold_at {{/ orders.sold.filter }}" in view["sql"]
 
     def test_map_holds_base_and_join_aliases(self, tmp_path):
         orch = self.orchestrator(tmp_path, MODEL)
@@ -403,8 +404,7 @@ class TestAliasesInTheTopic:
         _, topic, _ = migrated
         assert topic["relationships"] == [{
             "join_from_view": "sales",
-            "join_to_view": "stores",
-            "join_to_view_as": "shop",
+            "join_to_view": "shop",
             "join_type": "always_left",
             "on_sql": "${sales.store_key} = ${shop.store_key}",
             "relationship_type": "many_to_one",
@@ -446,7 +446,7 @@ class TestAliasesInTheTopic:
         table = section(report, "Alias map")
         assert "| Alias | Real view | Where declared |" in table
         assert "| `sales` | `sales_fact` | topic `views:` block (`extends: [sales_fact]`), used as `base_view` |" in table
-        assert "| `shop` | `stores` | `join_to_view_as` in the topic's `relationships:` |" in table
+        assert "| `shop` | `stores` | topic `views:` block (`extends: [stores]`), joined by that name |" in table
         assert "**Base View**: sales (alias of view `sales_fact`)" in report
 
     def test_alias_map_without_aliases(self, tmp_path):
@@ -496,7 +496,9 @@ class TestAliasesInTheTopic:
             }
         """)
         result, topic, report = migrate_explore(tmp_path, repo, "sales_fact")
-        assert topic["relationships"][0]["join_to_view_as"] == "buyer"
+        assert topic["relationships"][0]["join_to_view"] == "buyer"
+        assert "join_to_view_as" not in topic["relationships"][0]
+        assert topic["views"]["buyer"] == {"extends": ["people"]}
         assert "`buyer` (view `people`)" in manual_item(report, "Alias references not verified")
 
     def test_reference_by_the_real_name_of_an_aliased_base_is_not_part_of_the_explore(self, tmp_path):
@@ -532,7 +534,8 @@ class TestAliasesInTheTopic:
         repo = make_repo(tmp_path)
         _, sales, _ = migrate_explore(tmp_path, repo, "sales")
         _, logistics, _ = migrate_explore(tmp_path, repo, "logistics")
-        target = {t["base_view"]: {r["join_to_view_as"]: r["join_to_view"] for r in t["relationships"]}
+        target = {t["base_view"]: {r["join_to_view"]: t["views"][r["join_to_view"]]["extends"][0]
+                                   for r in t["relationships"]}
                   for t in (sales, logistics)}
         assert target == {"sales": {"shop": "stores"},
                           "sales_fact": {"depot": "warehouses", "shop": "warehouses"}}
@@ -681,7 +684,8 @@ class TestTopicScopedFieldsInExploreMode:
         block = topic["views"]["sales"]
         assert set(block["dimensions"]) == {"store_label", "store_label_upper", "shop_opened_on"}
         assert set(block["measures"]) == {"north_sales", "north_sales_double"}
-        assert set(topic["views"]["shop"]) == {"label"}
+        assert set(topic["views"]["shop"]) == {"label", "extends"}
+        assert topic["views"]["shop"]["extends"] == ["stores"]
 
     def test_report_section(self, sales):
         _, _, report = sales
@@ -728,7 +732,7 @@ class TestTopicScopedFieldsInExploreMode:
             }
         """, views)
         _, topic, _ = migrate_explore(tmp_path, repo, "sales_fact")
-        assert topic["views"]["area"] == {"dimensions": {"store_and_region": {
+        assert topic["views"]["area"] == {"extends": ["regions"], "dimensions": {"store_and_region": {
             "label": "Store And Region", "description": "Store And Region dimension", "tags": ["verified"],
             "sql": "CONCAT(${shop.store_name}, ${code})", "ai_context": "Text field for filtering and display.",
         }}}
@@ -739,7 +743,7 @@ class TestTopicScopedFieldsInExploreMode:
             "dimension: depot_label { sql: ${depot.name} ;; }",
             "dimension: depot_label { sql: {% if x %} ${depot.name} {% endif %} ;; }")
         result, topic, report = migrate_explore(tmp_path, make_repo(tmp_path, views=views), "logistics")
-        assert "views" not in topic
+        assert all(set(block) <= {"extends", "label"} for block in topic["views"].values())
         attention = manual_item(report, "Cross-view fields needing attention")
         assert "`sales_fact.depot_label`" in attention and "{% if %}" in attention
         assert any(i.startswith("Cross-view fields needing attention") for i in result.issues)
@@ -751,7 +755,7 @@ class TestTopicScopedFieldsInExploreMode:
                               "sql_on: ${sales_fact.store_key} = ${depot.warehouse_key}")
         assert "outside_view" in model
         result, topic, report = migrate_explore(tmp_path, make_repo(tmp_path, model), "logistics")
-        assert "views" not in topic
+        assert all(set(block) <= {"extends", "label"} for block in topic["views"].values())
         attention = manual_item(report, "Cross-view fields needing attention")
         assert "`sales_fact.depot_label`" in attention and "could not be checked" in attention
 

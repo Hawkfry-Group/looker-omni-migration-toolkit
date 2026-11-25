@@ -303,13 +303,13 @@ class TestExploreMigration:
         topic = load_yaml(tmp_path / TOPICS / "events.topic.yaml")
         assert topic["relationships"] == [{
             "join_from_view": "events",
-            "join_to_view": "users",
-            "join_to_view_as": "visitor",
+            "join_to_view": "visitor",
             "join_type": "always_left",
             "on_sql": "${events.user_id} = ${visitor.id}",
             "relationship_type": "many_to_one",
             "reversible": False,
         }]
+        assert topic["views"]["visitor"] == {"extends": ["users"]}
         assert topic["joins"] == {"visitor": {}}
 
     def test_unknown_explore_fails(self, tmp_path):

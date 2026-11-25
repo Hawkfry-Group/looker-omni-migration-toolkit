@@ -112,7 +112,7 @@ What happens to explore features:
 | `type: inner`, `full_outer`, `cross` | `inner`, `full_outer`, `cross` |
 | other join types or relationships | join not migrated; reported |
 | `sql_on` | `on_sql`, with `${view.field}` references kept; joins nested by which view they reference |
-| join `from:` alias | `join_to_view` plus `join_to_view_as`, scoped to the topic |
+| join `from:` alias | declared in the topic's `views:` block with `extends: [real_view]` and joined by the alias |
 | explore `from:` / `view_name:` that rename the base view | `base_view: <alias>`, declared in the topic's `views:` block with `extends: [real_view]` |
 | `view_label` | `label` in the topic's `views:` block |
 | fields of the topic's views that reference a join alias | written in the topic's `views:` block (view mode leaves them out of the view file) |

@@ -79,9 +79,11 @@ as MANUAL ACTION REQUIRED in the report, the console and
    `fields:` restrictions become topic `fields:` selectors.
    An explore with `extension: required` (or `template=True`) gets
    `template: true`.
-   Looker aliases are kept and scoped to the topic: an aliased join uses
-   `join_to_view_as`, and a base alias (`from:`/`view_name:`) is the topic's
-   `base_view`, declared in its `views:` block with `extends: [real_view]`.
+   Looker aliases are kept and scoped to the topic, each declared in its
+   `views:` block as an extended view (`extends: [real_view]`): a base alias
+   (`from:`/`view_name:`) is the topic's `base_view`, and an aliased join is
+   joined by its alias. `join_to_view_as` is used only with a relationships
+   file or when the alias has the name of another view.
    References through an alias are checked against the real view and only
    the unresolved ones are reported. Fields of the topic's views that
    reference a join alias (left out of the view files by view mode) are
@@ -541,8 +543,15 @@ class MigrationOrchestrator:
             cross_view_refs = {ref for ref in cross_view_refs if ref.split('.')[0] != view_name}
             if cross_view_refs:
                 views = sorted({ref.split('.')[0] for ref in cross_view_refs})
-                unknown = [view for view in views if view not in self._load_views()[0]]
+                aliases = [view for view in views if self._is_join_alias(view)]
+                unknown = [view for view in views if view not in self._load_views()[0] and view not in aliases]
                 details = "Fields reference other views (kept as ${view.field}): " + ', '.join(sorted(cross_view_refs))
+                if aliases:
+                    details += (". Join aliases kept from Looker: " + ', '.join(f"`{view}`" for view in aliases)
+                                + ". A filter token that names an alias is filled in only in a topic that declares "
+                                "the alias (explore mode writes it in the topic's `views:` block); elsewhere it "
+                                "reads as no filter. Omni model validation warns `No such field` for it on the "
+                                "view file, which is expected")
                 if unknown:
                     details += (". Not found under --looker-repo as a view or a join alias: "
                                 + ', '.join(f"`{view}`" for view in unknown)
@@ -1183,9 +1192,49 @@ class MigrationOrchestrator:
         view_ref, _, field_name = ref.rpartition('.')
         target_view = current_view
         if view_ref:
+            targets = sorted(self._alias_targets().get(view_ref, ()))
+            if view_ref != current_view and self._is_join_alias(view_ref) and targets != [current_view]:
+                return self._resolve_alias_ref(current_view, view_ref, field_name, ref, targets, typed)
             target_view, reason = self._resolve_liquid_view(view_ref, current_view)
             if target_view is None:
                 return None, reason
+        return self._resolve_view_field(current_view, target_view, field_name, ref, typed)
+
+    def _resolve_alias_ref(self, current_view: str, alias: str, field_name: str, ref: str,
+                           targets: List[str], typed: bool) -> Tuple[Optional[LiquidField], Optional[str]]:
+        """
+        The field `alias.field` names when `alias` is a join alias and not
+        a view: the token keeps the alias, as Looker wrote it
+
+        Omni binds a filter to the name a view goes by in the topic, so a
+        token that names the real view behind an alias is never filled in
+        and the SQL runs unfiltered. The alias is declared in each topic as
+        an extended view, which is where the token resolves. An alias that
+        stands for several views is accepted when every one of them defines
+        the field the same way.
+        """
+        found: List[LiquidField] = []
+        for target_view in targets:
+            target, reason = self._resolve_view_field(current_view, target_view, field_name, ref, typed)
+            if target is None:
+                if len(targets) == 1:
+                    return None, reason
+                return None, (f"`{alias}` is an alias of several views ({', '.join(targets)}), and in "
+                              f"`{target_view}`: {reason}")
+            found.append(target)
+        shapes = {(t.name, t.kind, t.looker_type, t.timeframe, t.omni_type) for t in found}
+        if len(shapes) > 1:
+            return None, (f"`{alias}` is an alias of several views ({', '.join(targets)}), which define "
+                          f"`{field_name}` differently, so the field it names here is not known")
+        target = found[0]
+        target.view = alias
+        target.alias = True
+        target.local = False
+        return target, None
+
+    def _resolve_view_field(self, current_view: str, target_view: str, field_name: str, ref: str,
+                            typed: bool = True) -> Tuple[Optional[LiquidField], Optional[str]]:
+        """The field `field_name` of `target_view`, as the tool writes it in Omni"""
         full = self._full_view(target_view)
         if full is None:
             return None, f"view `{target_view}` was not found under --looker-repo"
@@ -1916,7 +1965,20 @@ class MigrationOrchestrator:
                         f"relationships (the default) for this explore."
                     ))
 
-            relationships, join_tree, skipped = self._build_relationships(explore_info, manual, carried)
+            relationships, join_tree, skipped = self._build_relationships(
+                explore_info, manual, carried, relationships_file)
+            unlabelled = set()
+            for join in explore_info.joins:
+                if not join.is_aliased or join.view in skipped:
+                    continue
+                if self._alias_is_extended_view(join, relationships_file):
+                    topic_view_blocks[join.view] = {'extends': [join.source_view]}
+                    carried.append(
+                        f"join alias `{join.view}` (view `{join.source_view}`) → declared in the topic's `views:` "
+                        f"block with `extends: [{join.source_view}]` and joined by that name"
+                    )
+                else:
+                    unlabelled.add(join.view)
             # {name a view goes by in the topic: the real view}
             topic_views = {name: real for name, real in explore_info.view_names().items() if name not in skipped}
 
@@ -2001,6 +2063,8 @@ class MigrationOrchestrator:
             # The topic's `views:` block: base alias, view labels, fields that need a join alias
             for name, label in [(base_alias, explore_info.view_label)] + [
                     (join.view, join.view_label) for join in explore_info.joins]:
+                if name in unlabelled:
+                    continue
                 if label and name in topic_views and label != self._own_view_label(topic_views[name]):
                     topic_view_blocks.setdefault(name, {})['label'] = label
                     carried.append(f"view_label of `{name}` → `label: {label}` in the topic's `views:` block")
@@ -2384,14 +2448,18 @@ class MigrationOrchestrator:
         self,
         explore_info: ExploreInfo,
         manual: List[Tuple[str, str]],
-        carried: Optional[List[str]] = None
+        carried: Optional[List[str]] = None,
+        relationships_file: bool = False
     ) -> Tuple[List[Dict[str, Any]], Dict, List[str]]:
         """
         Convert joins to Omni relationships and a nested topic join tree
 
-        Looker aliases are kept: the base view goes by the explore's base
-        alias and an aliased join by `join_to_view_as`, so `on_sql` is
-        written as in Looker. A reference to the `date` or `raw` timeframe
+        Looker aliases are kept, so `on_sql` is written as in Looker: the
+        base view goes by the explore's base alias, and an aliased join is
+        joined by its alias, which the topic declares in its `views:` block
+        as an extended view (`extends: [real_view]`). `join_to_view_as` is
+        used only where the alias cannot be an extended view of the topic
+        (see `_alias_is_extended_view`). A reference to the `date` or `raw` timeframe
         of a dimension group is rewritten to `${view.group[date]}`; any
         other timeframe leaves the join out.
 
@@ -2488,18 +2556,25 @@ class MigrationOrchestrator:
                 relationship['join_from_view'] = base_view
             else:
                 parent_join = joins[parent]
-                relationship['join_from_view'] = parent_join.source_view
-                if parent_join.is_aliased:
-                    relationship['join_from_view_as'] = parent
-            relationship['join_to_view'] = join.source_view
-            if join.is_aliased:
+                if self._alias_is_extended_view(parent_join, relationships_file):
+                    relationship['join_from_view'] = parent
+                else:
+                    relationship['join_from_view'] = parent_join.source_view
+                    if parent_join.is_aliased:
+                        relationship['join_from_view_as'] = parent
+            if self._alias_is_extended_view(join, relationships_file):
+                relationship['join_to_view'] = name
+            else:
+                relationship['join_to_view'] = join.source_view
+            if join.is_aliased and not self._alias_is_extended_view(join, relationships_file):
                 relationship['join_to_view_as'] = name
                 if name in self._load_views()[0]:
                     manual.append((
                         f"Join alias {name} has the name of another view",
                         f"`join: {name} {{ from: {join.source_view} }}` became `join_to_view: {join.source_view}` "
                         f"with `join_to_view_as: {name}`, and `{name}` is also a view under --looker-repo. Verify "
-                        f"that `{name}` means `{join.source_view}` inside this topic in Omni."
+                        f"that `{name}` means `{join.source_view}` inside this topic in Omni. Its view_label is "
+                        f"not carried: an entry for `{name}` in the topic's `views:` block would change that view."
                     ))
             relationship.update({
                 'join_type': JOIN_TYPE_MAP[join.type or 'left_outer'],
@@ -2523,6 +2598,20 @@ class MigrationOrchestrator:
             parent = parents[name]
             (nodes[parent] if parent is not None else tree)[name] = nodes[name]
         return relationships, tree, skipped
+
+    def _alias_is_extended_view(self, join: JoinDefinition, relationships_file: bool) -> bool:
+        """
+        True when an aliased join is declared in the topic as an extended
+        view (`views: {alias: {extends: [real_view]}}`) and joined by name
+
+        This is the pattern Omni documents for a topic-scoped alias. An
+        alias written with `join_to_view_as` clashes with any entry of the
+        same name in the topic's `views:` block ("Relationship alias
+        duplicates view name"), and a filter that names the alias does not
+        bind to it. Not possible in a relationships file, which is
+        model-wide, nor when the alias has the name of another view.
+        """
+        return join.is_aliased and not relationships_file and join.view not in self._load_views()[0]
 
     def _topic_prefix(self, topic_prefix: Optional[str], explore: ExploreInfo) -> Optional[str]:
         """
@@ -2751,7 +2840,8 @@ class MigrationOrchestrator:
         if name in blocked:
             return 'manual', blocked[name]
         for target in (result.liquid.fields if result.liquid else []):
-            if topic_views.get(target.view) != target.view:
+            known = target.view in topic_views if target.alias else topic_views.get(target.view) == target.view
+            if not known:
                 return 'manual', (f"its translated Liquid names view `{target.view}`, which this topic does not "
                                   f"have under that name")
         return 'written', ''
@@ -2853,7 +2943,8 @@ class MigrationOrchestrator:
         if inheritance is not None:
             lines += self._inheritance_report_lines(explore_name, explore_info, inheritance)
 
-        lines += self._alias_map_lines(explore_info, skipped_views or [], relationships_file)
+        lines += self._alias_map_lines(explore_info, skipped_views or [], relationships_file,
+                                       set(self._load_views()[0]))
         if topic_field_lines:
             lines += [
                 "## Topic-scoped fields",
@@ -2988,7 +3079,8 @@ class MigrationOrchestrator:
         return lines
 
     @staticmethod
-    def _alias_map_lines(explore_info: ExploreInfo, skipped: List[str], relationships_file: bool) -> List[str]:
+    def _alias_map_lines(explore_info: ExploreInfo, skipped: List[str], relationships_file: bool,
+                         view_names: Optional[Set[str]] = None) -> List[str]:
         """Report section: every alias of the explore, the view behind it and where the topic declares it"""
         rows = []
         if explore_info.base_is_aliased:
@@ -3001,8 +3093,10 @@ class MigrationOrchestrator:
                 where = "not declared (the join was not migrated)"
             elif relationships_file:
                 where = "`join_to_view_as` in the relationships file"
+            elif join.view in (view_names or ()):
+                where = "`join_to_view_as` in the topic's `relationships:` (the alias has the name of another view)"
             else:
-                where = "`join_to_view_as` in the topic's `relationships:`"
+                where = f"topic `views:` block (`extends: [{join.source_view}]`), joined by that name"
             rows.append((join.view, join.source_view, where))
         lines = ["## Alias map", ""]
         if not rows:
